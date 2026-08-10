@@ -48,17 +48,25 @@ namespace ePriTrackerBackend.Controllers
         }
 
         [HttpGet("/product")]
-        //[Authorize(Roles ="User, Admin")]
-        public async Task<Product> getById([FromQuery]Guid id)
+        [Authorize(Roles = "User, Admin")]
+        public async Task<ActionResult<Product>> getById([FromQuery]Guid id)
         {
+
+            var userEmail = User?.Identity?.Name;
+            if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
+
             var product = await _repository.getById(id);
 
             return product;
         }
 
+        [Authorize(Roles ="Users")]
         [HttpGet("suggestion/{productId}")]
         public async Task<IActionResult> getAllBetterProducts(Guid productId)
         {
+
+            var userEmail = User?.Identity?.Name;
+            if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
             try
             {
                 // Controller gọi xuống Repository
@@ -72,6 +80,23 @@ namespace ePriTrackerBackend.Controllers
                 // Trả về HTTP Status 400 (Lỗi) kèm câu thông báo lỗi
                 return BadRequest(new { message = ex.Message });
             }
+        }
+
+        [Authorize(Roles = "Users")]
+        [HttpDelete("/api/product/delete")]
+        public async Task<IActionResult> deleteProduct([FromQuery] Guid id)
+        {
+
+            var userEmail = User?.Identity?.Name;
+            if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
+            bool isDeleted = await _repository.deleteProduct(id);
+
+            if (!isDeleted)
+            {
+                return BadRequest("delete error");
+            }
+
+            return Ok(new { message = "Delete successfully" });
         }
     }
 }

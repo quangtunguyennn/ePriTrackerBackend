@@ -10,5 +10,6 @@ namespace ePriTrackerBackend.Repositories
         public Task<List<Product>> getAll(string userEmail);
         public Task<Product> getById(Guid id);
         public Task<List<SuggestionProductDTO>> getAllBetterProducts(Guid productId);
+        public Task<bool> deleteProduct(Guid id);
     }
 }

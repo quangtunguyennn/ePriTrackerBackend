@@ -9,6 +9,7 @@ using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using Microsoft.AspNetCore.Authorization;
 namespace ePriTrackerBackend.Controllers
 {
     [Route("api/[controller]")]
@@ -53,6 +54,29 @@ namespace ePriTrackerBackend.Controllers
                 signingCredentials: creds
             );
             return new JwtSecurityTokenHandler().WriteToken(token);
+        }
+
+        
+
+        [HttpGet("/api/auth/me")]
+        [Authorize(Roles ="User")]
+        public async Task<IActionResult> getMe()
+        {
+            var currentUserEmail = User?.Identity?.Name;
+
+            var user = await _context.User.FirstOrDefaultAsync(x => x.Email == currentUserEmail);
+
+            if(user == null) return NotFound();
+
+            var userName = user.FirstName + " " + user.LastName;
+            var userEmail = user.Email;
+
+
+            return Ok(new
+            {
+                UserName = userName,
+                UserEmail = userEmail
+            });
         }
     }
 }

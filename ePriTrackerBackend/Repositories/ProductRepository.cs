@@ -2,6 +2,7 @@
 using ePriTrackerBackend.Models.DTOs;
 using ePriTrackerBackend.Models.Entities;
 using HtmlAgilityPack;
+using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Globalization;
@@ -123,9 +124,11 @@ namespace ePriTrackerBackend.Repositories
             // Truy vấn trực tiếp các Product có ID nằm trong danh sách trên
             var productList = await _context.Product
                 .Where(p => trackedProductIds.Contains(p.ProductId))
+                .OrderByDescending(p => p.AddedAt)
                 .ToListAsync();
 
             return productList;
+            
         }
       
         public async Task<Product> getById(Guid id)
@@ -305,6 +308,22 @@ namespace ePriTrackerBackend.Repositories
                 // Bạn có thể return false ở đây nếu muốn tracking SIÊU CHÍNH XÁC (Cùng một model)
                 // Hiện tại tạm thời để pass qua, nhưng thuật toán này giúp bạn mở rộng sau này.
             }
+
+            return true;
+        }
+
+        public async Task<bool> deleteProduct(Guid id)
+        {
+            var productItem = await _context.Item.FirstOrDefaultAsync(x => x.ProductId ==  id);
+
+            if(productItem == null)
+            {
+                throw new Exception("product not found");
+            }
+
+            _context.Item.Remove(productItem);
+            await _context.SaveChangesAsync();
+
 
             return true;
         }
