@@ -16,9 +16,9 @@ namespace ePriTrackerBackend.Controllers
             _repository = repository;
         }
 
-        // Endpoint: POST /api/Product/add
-        [HttpPost("add")]
-        [Authorize(Roles = "User")] // Thêm sản phẩm thường cấp quyền User, nếu là Admin thì bạn tự chỉnh nhé
+        // Endpoint: POST /api/product/add
+        [HttpPost("/api/product/add")]
+        [Authorize(Roles = "User")]
         public async Task<IActionResult> AddProduct([FromBody] string productLink)
         {
             try
@@ -35,8 +35,8 @@ namespace ePriTrackerBackend.Controllers
             }
         }
 
-        // Endpoint: GET /api/Product/getAll
-        [HttpGet("getAll")] // Dùng HttpGet thay vì HttpPost
+        // Endpoint: GET /api/product/all
+        [HttpGet("/api/product/all")]
         [Authorize(Roles = "User")]
         public async Task<IActionResult> GetAll()
         {
@@ -47,24 +47,26 @@ namespace ePriTrackerBackend.Controllers
             return Ok(products);
         }
 
+        // Endpoint: GET /product?id=...
         [HttpGet("/product")]
         [Authorize(Roles = "User, Admin")]
-        public async Task<ActionResult<Product>> getById([FromQuery]Guid id)
+        public async Task<ActionResult<Product>> getById([FromQuery] Guid id)
         {
-
             var userEmail = User?.Identity?.Name;
             if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
 
             var product = await _repository.getById(id);
 
+            if (product == null) return NotFound(new { message = "Không tìm thấy sản phẩm." });
+
             return product;
         }
 
-        [Authorize(Roles ="Users")]
-        [HttpGet("suggestion/{productId}")]
+        // Endpoint: GET /api/product/suggestion/{productId}
+        [Authorize(Roles = "User")]
+        [HttpGet("/api/product/suggestion/{productId}")]
         public async Task<IActionResult> getAllBetterProducts(Guid productId)
         {
-
             var userEmail = User?.Identity?.Name;
             if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
             try
@@ -82,21 +84,31 @@ namespace ePriTrackerBackend.Controllers
             }
         }
 
-        [Authorize(Roles = "Users")]
+        // Endpoint: DELETE /api/product/delete?id=...
+        [Authorize(Roles = "User")]
         [HttpDelete("/api/product/delete")]
         public async Task<IActionResult> deleteProduct([FromQuery] Guid id)
         {
-
             var userEmail = User?.Identity?.Name;
             if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
-            bool isDeleted = await _repository.deleteProduct(id);
 
-            if (!isDeleted)
+            try
             {
-                return BadRequest("delete error");
-            }
+                // Đã truyền thêm userEmail vào để khớp với Interface mới và đảm bảo bảo mật
+                bool isDeleted = await _repository.deleteProduct(id, userEmail);
 
-            return Ok(new { message = "Delete successfully" });
+                if (!isDeleted)
+                {
+                    return BadRequest("delete error");
+                }
+
+                return Ok(new { message = "Delete successfully" });
+            }
+            catch (Exception ex)
+            {
+                // Bắt lỗi từ DB quăng ra (như "Sản phẩm không tồn tại")
+                return BadRequest(new { message = ex.Message });
+            }
         }
     }
 }

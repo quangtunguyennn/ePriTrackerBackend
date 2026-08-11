@@ -13,6 +13,6 @@ namespace ePriTrackerBackend.Models.Context
         public DbSet<Item> Item { get; set; }
         public DbSet<SuggestionProduct> SuggestionProduct { get; set; }
 
-
+        public DbSet<PriceHistory> PriceHistory { get; set; }
     }
 }

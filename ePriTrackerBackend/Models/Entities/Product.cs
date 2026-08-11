@@ -11,6 +11,8 @@ namespace ePriTrackerBackend.Models.Entities
         public string ImageURL { get; set; }
         public string? Description { get; set; }
         public Decimal InitialPrice { get; set; }
+        public Decimal? LatestPrice { get; set; }
         public DateTime? AddedAt { get; set; }
+        public DateTimeOffset? LastUpdatedAt { get; set; }
     }
 }

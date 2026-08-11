@@ -1,5 +1,8 @@
 using ePriTrackerBackend.Models.Context;
 using ePriTrackerBackend.Repositories;
+using ePriTrackerBackend.Services;
+using Hangfire;
+using Hangfire.SqlServer; // Thêm namespace này cho Hangfire SQL
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -8,16 +11,21 @@ using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
+// ==========================================
+// 1. C?U HÌNH DATABASE & HTTP CLIENT
+// ==========================================
 
-// config DB
-
+// Config DbContext
 builder.Services.AddDbContext<ePriTrackerContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DBConnection")));
 
-// Add WJT 
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options
-=>
+// B?T BU?C: ??ng ký HttpClient Factory cho PriceCrawlerService s? d?ng
+builder.Services.AddHttpClient();
+
+// ==========================================
+// 2. C?U HÌNH AUTHENTICATION (JWT) & CORS
+// ==========================================
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
 {
     options.TokenValidationParameters = new TokenValidationParameters
     {
@@ -27,31 +35,55 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
         ValidateIssuerSigningKey = true,
         ValidIssuer = builder.Configuration["JwtSettings:Issuer"],
         ValidAudience = builder.Configuration["JwtSettings:Audience"],
-        IssuerSigningKey = new
-    SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["JwtSettings:SecretKey"]))
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["JwtSettings:SecretKey"]!))
     };
 });
 
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowAll",
-        policy =>
-        {
-            policy.AllowAnyOrigin()
-                  .AllowAnyHeader()
-                  .AllowAnyMethod();
-        });
+    options.AddPolicy("AllowAll", policy =>
+    {
+        policy.AllowAnyOrigin()
+              .AllowAnyHeader()
+              .AllowAnyMethod();
+    });
 });
 
-// config repos
+// ==========================================
+// 3. ??NG KÝ REPOSITORIES & SERVICES (DI)
+// ==========================================
+builder.Services.AddScoped<IProductRepository, ProductRepository>();
+builder.Services.AddScoped<IPriceCrawlerService, PriceCrawlerService>();
 
-builder.Services.AddScoped<IProductRepository,  ProductRepository>();
 builder.Services.AddControllers();
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+
+// ==========================================
+// 4. C?U HÌNH HANGFIRE
+// ==========================================
+builder.Services.AddHangfire(config => config
+    .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+    .UseSimpleAssemblyNameTypeSerializer()
+    .UseRecommendedSerializerSettings()
+    // ?ã ??i sang "DBConnection" cho ??ng b? v?i DbContext
+    .UseSqlServerStorage(builder.Configuration.GetConnectionString("DBConnection"), new SqlServerStorageOptions
+    {
+        CommandBatchMaxTimeout = TimeSpan.FromMinutes(5),
+        SlidingInvisibilityTimeout = TimeSpan.FromMinutes(5),
+        QueuePollInterval = TimeSpan.Zero,
+        UseRecommendedIsolationLevel = true,
+        DisableGlobalLocks = true
+    }));
+
+builder.Services.AddHangfireServer();
+
+// ==========================================
+// 5. C?U HÌNH SWAGGER
+// ==========================================
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
-    options.SwaggerDoc("v1", new OpenApiInfo { Title = "FruitStore API", Version = "v1" });
+    // ?ã ??i Title thành ePriTracker API
+    options.SwaggerDoc("v1", new OpenApiInfo { Title = "ePriTracker API", Version = "v1" });
 
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
@@ -81,7 +113,9 @@ builder.Services.AddSwaggerGen(options =>
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
+// ==========================================
+// 6. PIPELINE & MIDDLEWARE
+// ==========================================
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -90,8 +124,19 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 app.UseCors("AllowAll");
+
 app.UseAuthentication();
 app.UseAuthorization();
+
+// B?t Dashboard Hangfire (URL: https://localhost:<port>/hangfire)
+app.UseHangfireDashboard();
+
+// ??ng ký Job t? ??ng crawl giá m?i 6 ti?ng
+RecurringJob.AddOrUpdate<IPriceCrawlerService>(
+    "update-prices-job",
+    service => service.UpdateAllTrackedProductPricesAsync(),
+    "0 */6 * * *"
+);
 
 app.MapControllers();
 
