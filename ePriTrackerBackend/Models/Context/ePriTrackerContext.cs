@@ -14,5 +14,15 @@ namespace ePriTrackerBackend.Models.Context
         public DbSet<SuggestionProduct> SuggestionProduct { get; set; }
 
         public DbSet<PriceHistory> PriceHistory { get; set; }
+        public DbSet<Event> Event { get; set; }
+        public DbSet<EventProduct> EventProduct { get; set; }
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<EventProduct>()
+                .HasKey(ep => new { ep.EventId, ep.ProductId });
+
+            base.OnModelCreating(modelBuilder);
+        }
     }
 }

@@ -53,6 +53,7 @@ namespace ePriTrackerBackend.Repositories
                 throw new ArgumentException("Email người dùng không được trống.", nameof(userEmail));
 
             var user = await _context.User.AsNoTracking().FirstOrDefaultAsync(x => x.Email == userEmail);
+
             if (user == null)
             {
                 _logger.LogWarning("Không tìm thấy người dùng với email: {Email}", userEmail);
@@ -110,6 +111,34 @@ namespace ePriTrackerBackend.Repositories
                 };
                 _context.Item.Add(newItem);
                 await _context.SaveChangesAsync();
+                // Tự động liên kết Sản phẩm với Sự kiện
+                if (productLink.Contains("itm_campaign="))
+                {
+                    var campaignMatch = Regex.Match(productLink, @"itm_campaign=([^&]+)");
+                    if (campaignMatch.Success)
+                    {
+                        string campaignCode = campaignMatch.Groups[1].Value.ToLower();
+
+                        var matchedEvent = await _context.Event
+                            .FirstOrDefaultAsync(e => e.EventLink.ToLower().Contains(campaignCode));
+
+                        if (matchedEvent != null)
+                        {
+                            bool isMapped = await _context.Set<EventProduct>()
+                                .AnyAsync(ep => ep.EventId == matchedEvent.EventId && ep.ProductId == currentProductId);
+
+                            if (!isMapped)
+                            {
+                                _context.Set<EventProduct>().Add(new EventProduct
+                                {
+                                    EventId = matchedEvent.EventId,
+                                    ProductId = currentProductId
+                                });
+                                await _context.SaveChangesAsync();
+                            }
+                        }
+                    }
+                }
                 _logger.LogInformation("Đã thêm sản phẩm {ProductId} vào danh sách theo dõi của User {UserId}", currentProductId, user.UserId);
             }
         }

@@ -56,6 +56,7 @@ builder.Services.AddCors(options =>
 builder.Services.AddScoped<IProductRepository, ProductRepository>();
 builder.Services.AddScoped<IPriceCrawlerService, PriceCrawlerService>();
 builder.Services.AddScoped<ISuggestionsCrawlerService, SuggestionCrawlService>();
+builder.Services.AddScoped<IEventRepository, EventRepository>();
 
 builder.Services.AddControllers();
 
