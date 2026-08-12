@@ -43,19 +43,19 @@ namespace ePriTrackerBackend.Controllers
             var userEmail = User?.Identity?.Name;
             if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
 
-            var products = await _repository.getAll(userEmail);
+            var products = await _repository.GetAll(userEmail);
             return Ok(products);
         }
 
         // Endpoint: GET /product?id=...
         [HttpGet("/product")]
         [Authorize(Roles = "User, Admin")]
-        public async Task<ActionResult<Product>> getById([FromQuery] Guid id)
+        public async Task<ActionResult<Product>> GetById([FromQuery] Guid id)
         {
             var userEmail = User?.Identity?.Name;
             if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
 
-            var product = await _repository.getById(id);
+            var product = await _repository.GetById(id);
 
             if (product == null) return NotFound(new { message = "Không tìm thấy sản phẩm." });
 
@@ -65,14 +65,14 @@ namespace ePriTrackerBackend.Controllers
         // Endpoint: GET /api/product/suggestion/{productId}
         [Authorize(Roles = "User")]
         [HttpGet("/api/product/suggestion/{productId}")]
-        public async Task<IActionResult> getAllBetterProducts(Guid productId)
+        public async Task<IActionResult> GetAllBetterProducts(Guid productId)
         {
             var userEmail = User?.Identity?.Name;
             if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
             try
             {
                 // Controller gọi xuống Repository
-                var result = await _repository.getAllBetterProducts(productId);
+                var result = await _repository.GetAllBetterProducts(productId);
 
                 // Trả về HTTP Status 200 (Thành công) kèm dữ liệu
                 return Ok(result);
@@ -87,7 +87,7 @@ namespace ePriTrackerBackend.Controllers
         // Endpoint: DELETE /api/product/delete?id=...
         [Authorize(Roles = "User")]
         [HttpDelete("/api/product/delete")]
-        public async Task<IActionResult> deleteProduct([FromQuery] Guid id)
+        public async Task<IActionResult> DeleteProduct([FromQuery] Guid id)
         {
             var userEmail = User?.Identity?.Name;
             if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
@@ -95,7 +95,7 @@ namespace ePriTrackerBackend.Controllers
             try
             {
                 // Đã truyền thêm userEmail vào để khớp với Interface mới và đảm bảo bảo mật
-                bool isDeleted = await _repository.deleteProduct(id, userEmail);
+                bool isDeleted = await _repository.DeleteProduct(id, userEmail);
 
                 if (!isDeleted)
                 {

@@ -56,6 +56,30 @@ namespace ePriTrackerBackend.Controllers
             return new JwtSecurityTokenHandler().WriteToken(token);
         }
 
+        [HttpPost("/api/auth/register")]
+        public async Task<IActionResult> register(registerRequestDTO request)
+        {
+            if(await _context.User.FirstOrDefaultAsync(x => x.Email == request.Email) != null)
+            {
+                return BadRequest(new { message = "email is used" });
+            }
+
+            var newUser = new User()
+            {
+                FirstName = request.FirstName,
+                LastName = request.LastName,
+                Email = request.Email,
+                Password = request.Password,
+                Role = "User",
+                IsActive = true,
+                CreatedAt = DateTime.Now
+            };
+
+            await _context.User.AddAsync(newUser);
+            await _context.SaveChangesAsync();
+
+            return Ok(new {message ="register successfully"});
+        }
         
 
         [HttpGet("/api/auth/me")]

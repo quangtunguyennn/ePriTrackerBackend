@@ -2,11 +2,12 @@ using ePriTrackerBackend.Models.Context;
 using ePriTrackerBackend.Repositories;
 using ePriTrackerBackend.Services;
 using Hangfire;
-using Hangfire.SqlServer; // Thêm namespace này cho Hangfire SQL
+using Hangfire.SqlServer;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
+using System;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -54,6 +55,7 @@ builder.Services.AddCors(options =>
 // ==========================================
 builder.Services.AddScoped<IProductRepository, ProductRepository>();
 builder.Services.AddScoped<IPriceCrawlerService, PriceCrawlerService>();
+builder.Services.AddScoped<ISuggestionsCrawlerService, SuggestionCrawlService>();
 
 builder.Services.AddControllers();
 
@@ -64,7 +66,6 @@ builder.Services.AddHangfire(config => config
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
     .UseSimpleAssemblyNameTypeSerializer()
     .UseRecommendedSerializerSettings()
-    // ?ã ??i sang "DBConnection" cho ??ng b? v?i DbContext
     .UseSqlServerStorage(builder.Configuration.GetConnectionString("DBConnection"), new SqlServerStorageOptions
     {
         CommandBatchMaxTimeout = TimeSpan.FromMinutes(5),
@@ -73,7 +74,7 @@ builder.Services.AddHangfire(config => config
         UseRecommendedIsolationLevel = true,
         DisableGlobalLocks = true
     }));
-
+builder.Services.AddMemoryCache();
 builder.Services.AddHangfireServer();
 
 // ==========================================
@@ -82,7 +83,6 @@ builder.Services.AddHangfireServer();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
-    // ?ã ??i Title thành ePriTracker API
     options.SwaggerDoc("v1", new OpenApiInfo { Title = "ePriTracker API", Version = "v1" });
 
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
@@ -131,11 +131,34 @@ app.UseAuthorization();
 // B?t Dashboard Hangfire (URL: https://localhost:<port>/hangfire)
 app.UseHangfireDashboard();
 
-// ??ng ký Job t? ??ng crawl giá m?i 6 ti?ng
+// ==========================================
+// 7. C?U HÌNH TIMEZONE & ??NG KÝ HANGFIRE JOBS
+// ==========================================
+// Thi?t l?p múi gi? Vi?t Nam an toàn ?a n?n t?ng không c?n th? vi?n ngoài
+TimeZoneInfo vietnamTz;
+try
+{
+    vietnamTz = TimeZoneInfo.FindSystemTimeZoneById("Asia/Ho_Chi_Minh"); // Dành cho Linux / Docker
+}
+catch (TimeZoneNotFoundException)
+{
+    vietnamTz = TimeZoneInfo.FindSystemTimeZoneById("SE Asia Standard Time"); // Dành cho Windows / IIS
+}
+
+// 1. Job t? ??ng crawl giá m?i 6 ti?ng
 RecurringJob.AddOrUpdate<IPriceCrawlerService>(
     "update-prices-job",
     service => service.UpdateAllTrackedProductPricesAsync(),
-    "0 */6 * * *"
+    "0 */6 * * *",
+    new RecurringJobOptions { TimeZone = vietnamTz }
+);
+
+// 2. Job c?p nh?t g?i ý m?i 6 ti?ng
+RecurringJob.AddOrUpdate<ISuggestionsCrawlerService>(
+    "update-suggestions-job",
+    service => service.UpdateAllTrackedProductSuggestionsAsync(CancellationToken.None),
+    "0 */6 * * *",
+    new RecurringJobOptions { TimeZone = vietnamTz }
 );
 
 app.MapControllers();

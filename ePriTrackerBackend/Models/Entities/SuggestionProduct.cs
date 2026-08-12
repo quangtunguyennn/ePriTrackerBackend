@@ -20,6 +20,7 @@ namespace ePriTrackerBackend.Models.Entities
         public string ImageURL { get; set; }
         [Required]
         public string ProductLink { get; set; }
+        public DateTimeOffset? LastUpdatedAt { get; set; }
         
     }
 }

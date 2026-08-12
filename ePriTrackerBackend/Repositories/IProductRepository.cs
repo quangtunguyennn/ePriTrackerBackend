@@ -7,9 +7,9 @@ namespace ePriTrackerBackend.Repositories
     public interface IProductRepository
     {
         public Task AddProduct(string productLink, string userEmail);
-        public Task<List<Product>> getAll(string userEmail);
-        public Task<Product> getById(Guid id);
-        public Task<List<SuggestionProductDTO>> getAllBetterProducts(Guid productId);
-        public Task<bool> deleteProduct(Guid id, string userEmail);
+        public Task<List<Product>> GetAll(string userEmail);
+        public Task<Product> GetById(Guid id);
+        public Task<List<SuggestionProductDTO>> GetAllBetterProducts(Guid productId);
+        public Task<bool> DeleteProduct(Guid id, string userEmail);
     }
 }

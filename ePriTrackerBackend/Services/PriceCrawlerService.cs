@@ -99,13 +99,13 @@ namespace ePriTrackerBackend.Services
                 if (product != null)
                 {
                     product.LatestPrice = fetched.NewPrice;
-                    product.LastUpdatedAt = DateTimeOffset.UtcNow;
+                    product.LastUpdatedAt = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7));
 
                     _context.PriceHistory.Add(new PriceHistory
                     {
                         ProductId = product.ProductId,
                         Price = fetched.NewPrice,
-                        CheckedAt = DateTimeOffset.UtcNow
+                        CheckedAt = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7))
                     });
                     successCount++;
                 }
