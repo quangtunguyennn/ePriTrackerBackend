@@ -1,6 +1,7 @@
 ﻿using ePriTrackerBackend.Models.Context;
 using ePriTrackerBackend.Models.DTOs;
 using ePriTrackerBackend.Models.Entities;
+using ePriTrackerBackend.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using System.Globalization;
@@ -13,18 +14,16 @@ namespace ePriTrackerBackend.Repositories
     public class ProductRepository : IProductRepository
     {
         private readonly ePriTrackerContext _context;
-        private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger<ProductRepository> _logger;
+        private readonly ITikiBrowserService _tikiBrowser;
 
-        // Giới hạn request gọi sang Tiki (Tránh bị chặn IP)
-        private static readonly SemaphoreSlim _tikiRateLimiter = new SemaphoreSlim(5, 5);
+        // Tái sử dụng HttpClient để tránh cạn kiệt Socket (Socket Exhaustion)
+        private static readonly HttpClient _httpClient = new HttpClient();
 
-        // Tối ưu hóa Regex (Compile 1 lần, dùng nhiều lần)
         private static readonly Regex ProductIdRegex = new Regex(@"-p(\d+)\.html", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex SpecialCharRegex = new Regex(@"[^\p{L}\p{N}]", RegexOptions.Compiled);
         private static readonly Regex WhiteSpaceRegex = new Regex(@"\s+", RegexOptions.Compiled);
 
-        // Danh sách phụ kiện (Dùng HashSet để lookup O(1) siêu tốc)
         private static readonly HashSet<string> AccessoriesBlacklist = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "op lung", "bao da", "kinh cuong luc", "mieng dan",
@@ -32,21 +31,29 @@ namespace ePriTrackerBackend.Repositories
         };
 
         private const string TikiBaseUrl = "https://tiki.vn";
-        private const decimal MinPriceRatioThreshold = 0.4m; // Giá gợi ý không được thấp hơn 40% giá gốc (Lọc rác)
+        private const decimal MinPriceRatioThreshold = 0.4m;
+
+        // Thiết lập Header giả lập trình duyệt cơ bản cho HttpClient để hạn chế bị chặn ngay từ đầu
+        static ProductRepository()
+        {
+            _httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+        }
 
         public ProductRepository(
             ePriTrackerContext context,
-            IHttpClientFactory httpClientFactory,
-            ILogger<ProductRepository> logger)
+            ILogger<ProductRepository> logger,
+            ITikiBrowserService tikiBrowser)
         {
             _context = context ?? throw new ArgumentNullException(nameof(context));
-            _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _tikiBrowser = tikiBrowser ?? throw new ArgumentNullException(nameof(tikiBrowser));
         }
+
+        #region Public Interface Implementations
 
         public async Task AddProduct(string productLink, string userEmail)
         {
-            // 1. Guard clauses (Kiểm tra đầu vào)
             if (string.IsNullOrWhiteSpace(productLink))
                 throw new ArgumentException("Link sản phẩm không được trống.", nameof(productLink));
             if (string.IsNullOrWhiteSpace(userEmail))
@@ -70,46 +77,28 @@ namespace ePriTrackerBackend.Repositories
             string tikiProductId = match.Groups[1].Value;
             string normalizedLink = $"{TikiBaseUrl}/product-p{tikiProductId}.html";
 
-            // 2. Xử lý Sản phẩm
             var existingProduct = await _context.Product.FirstOrDefaultAsync(x => x.ProductLink == normalizedLink);
             Guid currentProductId;
 
             if (existingProduct == null)
             {
-                _logger.LogInformation("Sản phẩm chưa có trong DB, tiến hành lấy dữ liệu từ Tiki: {ProductId}", tikiProductId);
-                var newProduct = await FetchProductFromTikiAsync(tikiProductId, normalizedLink);
+                _logger.LogInformation("Sản phẩm chưa có trong DB, tiến hành lấy dữ liệu (Ưu tiên HttpClient): {ProductId}", tikiProductId);
 
-                // Lưu sản phẩm
+                var newProduct = await FetchProductDataAsync(tikiProductId, normalizedLink);
+
                 _context.Product.Add(newProduct);
                 await _context.SaveChangesAsync();
                 currentProductId = newProduct.ProductId;
-
-                // Fire & Forget hoặc Await: Lấy danh sách gợi ý
-                _logger.LogInformation("Bắt đầu lấy sản phẩm gợi ý cho: {ProductName}", newProduct.ProductName);
-                var suggestions = await CrawlAndBuildSuggestionsAsync(currentProductId, newProduct.ProductName, newProduct.InitialPrice);
-                if (suggestions.Any())
-                {
-                    _context.Set<SuggestionProduct>().AddRange(suggestions);
-                    await _context.SaveChangesAsync();
-                    _logger.LogInformation("Đã lưu {Count} sản phẩm gợi ý.", suggestions.Count);
-                }
             }
             else
             {
-                _logger.LogInformation("Sản phẩm đã tồn tại trong DB: {ProductId}", existingProduct.ProductId);
                 currentProductId = existingProduct.ProductId;
             }
 
-            // 3. Xử lý Tracking cho User
             bool isTracking = await _context.Item.AnyAsync(x => x.UserId == user.UserId && x.ProductId == currentProductId);
             if (!isTracking)
             {
-                var newItem = new Item
-                {
-                    UserId = user.UserId,
-                    ProductId = currentProductId
-                };
-                _context.Item.Add(newItem);
+                _context.Item.Add(new Item { UserId = user.UserId, ProductId = currentProductId });
                 await _context.SaveChangesAsync();
                 // Tự động liên kết Sản phẩm với Sự kiện
                 if (productLink.Contains("itm_campaign="))
@@ -145,19 +134,75 @@ namespace ePriTrackerBackend.Repositories
 
         public async Task<List<SuggestionProductDTO>> GetAllBetterProducts(Guid productId)
         {
-            // Dùng AsNoTracking cho các query chỉ đọc để tăng tối đa hiệu suất
-            return await _context.Set<SuggestionProduct>()
+            var suggestions = await _context.Set<SuggestionProduct>()
                 .AsNoTracking()
                 .Where(s => s.ProductId == productId)
+                .ToListAsync();
+
+            if (!suggestions.Any())
+            {
+                var product = await _context.Product.AsNoTracking().FirstOrDefaultAsync(p => p.ProductId == productId);
+                if (product != null)
+                {
+                    _logger.LogInformation("Lazy Loading: Bắt đầu lấy sản phẩm gợi ý cho: {ProductName}", product.ProductName);
+
+                    var newSuggestions = await CrawlSuggestionsAsync(product.ProductId, product.ProductName, product.InitialPrice);
+
+                    if (newSuggestions.Any())
+                    {
+                        _context.Set<SuggestionProduct>().AddRange(newSuggestions);
+                        await _context.SaveChangesAsync();
+                        suggestions = newSuggestions;
+                    }
+                }
+            }
+
+            return suggestions
                 .OrderBy(s => s.Price)
                 .Select(s => new SuggestionProductDTO
                 {
                     ProductName = s.ProductName,
                     Price = s.Price,
                     ImageURL = s.ImageURL,
-                    ProductLink = s.ProductLink
+                    ProductLink = s.ProductLink,
+                    LastUpdatedAt = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7))
                 })
-                .ToListAsync();
+                .ToList();
+        }
+
+        public async Task<List<SuggestionProductDTO>> RefreshSuggestions(Guid productId)
+        {
+            var product = await _context.Product.AsNoTracking().FirstOrDefaultAsync(p => p.ProductId == productId);
+            if (product == null) throw new Exception("Không tìm thấy thông tin sản phẩm gốc.");
+
+            _logger.LogInformation("Người dùng yêu cầu làm mới gợi ý, ép cào dữ liệu mới cho: {ProductName}", product.ProductName);
+
+            var freshSuggestions = await CrawlSuggestionsAsync(product.ProductId, product.ProductName, product.InitialPrice);
+
+            var oldSuggestions = await _context.Set<SuggestionProduct>().Where(s => s.ProductId == productId).ToListAsync();
+            if (oldSuggestions.Any())
+            {
+                _context.Set<SuggestionProduct>().RemoveRange(oldSuggestions);
+            }
+
+            if (freshSuggestions.Any())
+            {
+                _context.Set<SuggestionProduct>().AddRange(freshSuggestions);
+            }
+
+            await _context.SaveChangesAsync();
+
+            return freshSuggestions
+                .OrderBy(s => s.Price)
+                .Select(s => new SuggestionProductDTO
+                {
+                    ProductName = s.ProductName,
+                    Price = s.Price,
+                    ImageURL = s.ImageURL,
+                    ProductLink = s.ProductLink,
+                    LastUpdatedAt = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7))
+                })
+                .ToList();
         }
 
         public async Task<List<Product>> GetAll(string userEmail)
@@ -191,53 +236,49 @@ namespace ePriTrackerBackend.Repositories
             if (user == null) throw new Exception("Không tìm thấy người dùng");
 
             var productItem = await _context.Item.FirstOrDefaultAsync(x => x.ProductId == id && x.UserId == user.UserId);
-            if (productItem == null)
-            {
-                throw new Exception("Sản phẩm không tồn tại trong danh sách theo dõi của bạn.");
-            }
+            if (productItem == null) throw new Exception("Sản phẩm không tồn tại trong danh sách theo dõi.");
 
             _context.Item.Remove(productItem);
             await _context.SaveChangesAsync();
-
-            _logger.LogInformation("User {UserId} đã bỏ theo dõi sản phẩm {ProductId}", user.UserId, id);
             return true;
         }
 
-        #region Private Helper Methods
+        #endregion
 
-        private async Task<Product> FetchProductFromTikiAsync(string tikiProductId, string normalizedLink)
+        #region Private API & Parsing Methods (Delegated to TikiBrowserService)
+
+        // HÀM MỚI: Tự động dùng HttpClient cho nhanh, nếu thất bại (bị chặn) thì chuyển sang Playwright
+        private async Task<JsonElement> FetchTikiApiWithFallbackAsync(string apiPath)
         {
-            string jsonResponse;
-            await _tikiRateLimiter.WaitAsync();
+            string fullUrl = $"{TikiBaseUrl}{apiPath}";
             try
             {
-                var client = _httpClientFactory.CreateClient();
-                SetupBrowserHeaders(client);
-                await Task.Delay(Random.Shared.Next(500, 1200)); // Delay ngẫu nhiên chống Bot Detection
+                _logger.LogInformation("Đang thử gọi API Tiki qua HttpClient: {Url}", fullUrl);
+                var response = await _httpClient.GetAsync(fullUrl);
 
-                string apiUrl = $"{TikiBaseUrl}/api/v2/products/{tikiProductId}";
-                var response = await client.GetAsync(apiUrl);
+                // Nếu bị Tiki trả về 403 Forbidden hoặc lỗi khác -> Ném exception để catch bên dưới
+                response.EnsureSuccessStatusCode();
 
-                if (!response.IsSuccessStatusCode)
-                {
-                    _logger.LogError("Lỗi API Tiki khi lấy SP chính. Status: {StatusCode}", response.StatusCode);
-                    throw new Exception($"Lấy dữ liệu từ Tiki thất bại. Status Code: {response.StatusCode}");
-                }
+                string jsonString = await response.Content.ReadAsStringAsync();
+                using var document = JsonDocument.Parse(jsonString);
 
-                jsonResponse = await response.Content.ReadAsStringAsync();
+                _logger.LogInformation("Lấy dữ liệu HttpClient thành công (Tốc độ cao)!");
+                return document.RootElement.Clone(); // Clone để giữ data khi document bị dispose
             }
-            finally
+            catch (Exception ex)
             {
-                _tikiRateLimiter.Release();
+                _logger.LogWarning("HttpClient thất bại ({Msg}). Kích hoạt Playwright tàng hình cho URL: {Url}", ex.Message, fullUrl);
+                // Fallback sang Playwright
+                return await _tikiBrowser.FetchTikiApiAsync(apiPath);
             }
+        }
 
-            if (jsonResponse.TrimStart().StartsWith("<"))
-            {
-                throw new Exception("Tiki đang chặn yêu cầu lấy dữ liệu (Rate Limit / Bot). Vui lòng thử lại sau.");
-            }
+        private async Task<Product> FetchProductDataAsync(string tikiProductId, string normalizedLink)
+        {
+            string apiPath = $"/api/v2/products/{tikiProductId}";
 
-            using var jsonDoc = JsonDocument.Parse(jsonResponse);
-            var root = jsonDoc.RootElement;
+            // Dùng hàm bọc Fallback
+            JsonElement root = await FetchTikiApiWithFallbackAsync(apiPath);
 
             string name = root.TryGetProperty("name", out var nameProp) ? nameProp.GetString() ?? "Sản phẩm không xác định" : "Sản phẩm không xác định";
             decimal price = root.TryGetProperty("price", out var priceProp) && priceProp.ValueKind == JsonValueKind.Number ? priceProp.GetDecimal() : 0;
@@ -257,49 +298,17 @@ namespace ePriTrackerBackend.Repositories
             };
         }
 
-        private async Task<List<SuggestionProduct>> CrawlAndBuildSuggestionsAsync(Guid productId, string productName, decimal initialPrice)
+        private async Task<List<SuggestionProduct>> CrawlSuggestionsAsync(Guid productId, string productName, decimal initialPrice)
         {
             string searchKeyword = ExtractSearchKeyword(productName);
             if (string.IsNullOrEmpty(searchKeyword)) return new List<SuggestionProduct>();
 
-            string jsonResponse;
-            await _tikiRateLimiter.WaitAsync();
-            try
-            {
-                var client = _httpClientFactory.CreateClient();
-                SetupBrowserHeaders(client);
-                await Task.Delay(Random.Shared.Next(500, 1500));
-
-                string apiUrl = $"{TikiBaseUrl}/api/v2/products?limit=10&q={Uri.EscapeDataString(searchKeyword)}";
-                var response = await client.GetAsync(apiUrl);
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    _logger.LogWarning("Lỗi API Tiki khi search gợi ý. Keyword: {Keyword}, Status: {StatusCode}", searchKeyword, response.StatusCode);
-                    return new List<SuggestionProduct>();
-                }
-                jsonResponse = await response.Content.ReadAsStringAsync();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Lỗi Exception khi crawl sản phẩm gợi ý. Keyword: {Keyword}", searchKeyword);
-                return new List<SuggestionProduct>();
-            }
-            finally
-            {
-                _tikiRateLimiter.Release();
-            }
-
-            if (jsonResponse.TrimStart().StartsWith("<"))
-            {
-                _logger.LogWarning("Tiki trả về HTML. Khả năng bị chặn do Rate Limit.");
-                return new List<SuggestionProduct>();
-            }
+            string apiPath = $"/api/v2/products?limit=10&q={Uri.EscapeDataString(searchKeyword)}";
 
             try
             {
-                using var jsonDoc = JsonDocument.Parse(jsonResponse);
-                var root = jsonDoc.RootElement;
+                // Dùng hàm bọc Fallback
+                JsonElement root = await FetchTikiApiWithFallbackAsync(apiPath);
 
                 if (!root.TryGetProperty("data", out JsonElement dataElement) || dataElement.ValueKind != JsonValueKind.Array)
                 {
@@ -307,7 +316,6 @@ namespace ePriTrackerBackend.Repositories
                 }
 
                 var suggestionEntities = new List<SuggestionProduct>();
-
                 foreach (var item in dataElement.EnumerateArray())
                 {
                     if (!item.TryGetProperty("id", out _)) continue;
@@ -315,10 +323,8 @@ namespace ePriTrackerBackend.Repositories
                     string currentName = item.TryGetProperty("name", out var nameProp) ? nameProp.GetString() ?? "" : "";
                     decimal suggestionPrice = item.TryGetProperty("price", out var priceProp) && priceProp.ValueKind == JsonValueKind.Number ? priceProp.GetDecimal() : 0;
 
-                    if (!IsValidSimilarProduct(productName, currentName))
-                        continue;
+                    if (!IsValidSimilarProduct(productName, currentName)) continue;
 
-                    // Điều kiện giá linh hoạt: Gợi ý có thể bằng hoặc rẻ hơn, nhưng không rớt xuống ngưỡng phi lý
                     if (suggestionPrice > 0 && suggestionPrice <= initialPrice && suggestionPrice > (initialPrice * MinPriceRatioThreshold))
                     {
                         string imageUrl = item.TryGetProperty("thumbnail_url", out var imgProp) ? imgProp.GetString() ?? "" : "";
@@ -331,7 +337,7 @@ namespace ePriTrackerBackend.Repositories
                             ProductName = currentName,
                             Price = suggestionPrice,
                             ImageURL = imageUrl,
-                            ProductLink = string.IsNullOrEmpty(urlPath) ? "" : $"{TikiBaseUrl}/{urlPath}",
+                            ProductLink = string.IsNullOrEmpty(urlPath) ? "" : $"{TikiBaseUrl}/{urlPath.TrimStart('/')}",
                             LastUpdatedAt = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7))
                         });
                     }
@@ -340,19 +346,14 @@ namespace ePriTrackerBackend.Repositories
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Lỗi Parse JSON khi xử lý sản phẩm gợi ý.");
+                _logger.LogError(ex, "Lỗi khi lấy sản phẩm gợi ý từ API.");
                 return new List<SuggestionProduct>();
             }
         }
 
-        private void SetupBrowserHeaders(HttpClient client)
-        {
-            client.DefaultRequestHeaders.Clear();
-            client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-            client.DefaultRequestHeaders.Add("Accept", "application/json, text/plain, */*");
-            client.DefaultRequestHeaders.Add("Accept-Language", "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7");
-            client.DefaultRequestHeaders.Add("Referer", TikiBaseUrl + "/");
-        }
+        #endregion
+
+        #region Private Helper Methods (Text Processing & Algorithms)
 
         private string ExtractSearchKeyword(string rawName)
         {
@@ -391,7 +392,6 @@ namespace ePriTrackerBackend.Repositories
             bool originalIsAccessory = AccessoriesBlacklist.Any(x => lowerOriginalNoMark.Contains(x));
             bool searchIsAccessory = AccessoriesBlacklist.Any(x => lowerSearchNoMark.Contains(x));
 
-            // Chống spam gợi ý phụ kiện cho sản phẩm chính
             if (!originalIsAccessory && searchIsAccessory) return false;
 
             var originalWords = lowerOriginalNoMark.Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -404,20 +404,17 @@ namespace ePriTrackerBackend.Repositories
                 bool containsWord1 = lowerSearchNoMark.Contains(entityWord1);
                 bool containsWord2 = !string.IsNullOrEmpty(entityWord2) && lowerSearchNoMark.Contains(entityWord2);
 
-                // Yêu cầu ít nhất 1 trong 2 từ khóa gốc (thường là Brand hoặc Dòng SP) phải xuất hiện
                 if (!containsWord1 && !containsWord2)
                 {
                     return false;
                 }
             }
-
             return true;
         }
 
         private string RemoveVietnameseDiacritics(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return text;
-
             var normalizedString = text.Normalize(NormalizationForm.FormD);
             var stringBuilder = new StringBuilder(capacity: normalizedString.Length);
 
@@ -436,6 +433,7 @@ namespace ePriTrackerBackend.Repositories
                 .Replace('đ', 'd')
                 .Replace('Đ', 'D');
         }
+
         #endregion
     }
 }
