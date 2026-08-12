@@ -110,5 +110,16 @@ namespace ePriTrackerBackend.Controllers
                 return BadRequest(new { message = ex.Message });
             }
         }
+
+        [Authorize(Roles ="User")]
+        [HttpGet("/api/product/refresh-suggestions")]
+        public async Task<IActionResult> RefreshSuggestions(Guid productId)
+        {
+            var userEmail = User?.Identity?.Name;
+            if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
+
+            var suggestions = await _repository.RefreshSuggestions(productId);
+            return Ok(suggestions);
+        }
     }
 }

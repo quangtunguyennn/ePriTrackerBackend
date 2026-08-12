@@ -53,9 +53,11 @@ builder.Services.AddCors(options =>
 // ==========================================
 // 3. ??NG KÝ REPOSITORIES & SERVICES (DI)
 // ==========================================
+builder.Services.AddSingleton<ITikiBrowserService, TikiBrowserService>();
 builder.Services.AddScoped<IProductRepository, ProductRepository>();
 builder.Services.AddScoped<IPriceCrawlerService, PriceCrawlerService>();
 builder.Services.AddScoped<ISuggestionsCrawlerService, SuggestionCrawlService>();
+
 
 builder.Services.AddControllers();
 

@@ -1,46 +1,45 @@
 ﻿using Microsoft.EntityFrameworkCore;
-using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Web;
 using ePriTrackerBackend.Models.Context;
 using ePriTrackerBackend.Models.Entities;
+using ePriTrackerBackend.Services;
+using Microsoft.Extensions.Logging;
 
 namespace ePriTrackerBackend.Services
 {
     public class PriceCrawlerService : IPriceCrawlerService
     {
         private readonly ePriTrackerContext _context;
-        private readonly HttpClient _httpClient;
+        private readonly ITikiBrowserService _tikiBrowserService; // Tầng 2: Vũ khí tàng hình Playwright
         private readonly ILogger<PriceCrawlerService> _logger;
+
+        // TẦNG 1: Tái sử dụng HttpClient để crawl tốc độ cao, tiết kiệm RAM/CPU
+        private static readonly HttpClient _httpClient = new HttpClient();
+        private const string TikiBaseUrl = "https://tiki.vn";
+
+        static PriceCrawlerService()
+        {
+            _httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+            _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+        }
 
         public PriceCrawlerService(
             ePriTrackerContext context,
-            IHttpClientFactory httpClientFactory,
+            ITikiBrowserService tikiBrowserService,
             ILogger<PriceCrawlerService> logger)
         {
-            _context = context;
-            _httpClient = httpClientFactory.CreateClient();
-            _logger = logger;
-
-            // Bổ sung đầy đủ bộ Header giả lập trình duyệt Chrome
-            _httpClient.DefaultRequestHeaders.Clear();
-            _httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-            _httpClient.DefaultRequestHeaders.Add("Accept", "application/json, text/plain, */*");
-            _httpClient.DefaultRequestHeaders.Add("Accept-Language", "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7");
-            _httpClient.DefaultRequestHeaders.Add("Referer", "https://tiki.vn/");
-            _httpClient.DefaultRequestHeaders.Add("Sec-Ch-Ua", "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"");
-            _httpClient.DefaultRequestHeaders.Add("Sec-Ch-Ua-Mobile", "?0");
-            _httpClient.DefaultRequestHeaders.Add("Sec-Ch-Ua-Platform", "\"Windows\"");
-            _httpClient.DefaultRequestHeaders.Add("Sec-Fetch-Dest", "empty");
-            _httpClient.DefaultRequestHeaders.Add("Sec-Fetch-Mode", "cors");
-            _httpClient.DefaultRequestHeaders.Add("Sec-Fetch-Site", "same-origin");
+            _context = context ?? throw new ArgumentNullException(nameof(context));
+            _tikiBrowserService = tikiBrowserService ?? throw new ArgumentNullException(nameof(tikiBrowserService));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
         public async Task UpdateAllTrackedProductPricesAsync()
         {
-            _logger.LogInformation("🚀 [Hangfire] Bắt đầu tiến trình crawl cập nhật giá định kỳ...");
+            _logger.LogInformation("🚀 [Hangfire/Dual-Layer] Bắt đầu tiến trình crawl cập nhật giá định kỳ...");
 
+            // Lấy danh sách sản phẩm cần update (có người theo dõi)
             var productsToUpdate = await _context.Product
                 .Where(p => _context.Item.Select(i => i.ProductId).Contains(p.ProductId))
                 .ToListAsync();
@@ -51,94 +50,107 @@ namespace ePriTrackerBackend.Services
                 return;
             }
 
-            // --- PHA 1: LẤY GIÁ TỪ API ĐỒNG THỜI (Tối đa 5 request cùng lúc) ---
-            int maxConcurrentRequests = 5;
-            using var semaphore = new SemaphoreSlim(maxConcurrentRequests);
-            var tasks = new List<Task>();
-
-            // Dùng ConcurrentBag để lưu dữ liệu an toàn trong môi trường đa luồng
-            var fetchedPrices = new ConcurrentBag<(Guid ProductId, decimal NewPrice)>();
-
-            foreach (var product in productsToUpdate)
-            {
-                // Lưu ý: Không dùng DbContext bên trong Task.Run
-                tasks.Add(Task.Run(async () =>
-                {
-                    await semaphore.WaitAsync();
-                    try
-                    {
-                        decimal? newPrice = await FetchPriceFromApiAsync(product.ProductLink);
-
-                        if (newPrice.HasValue && newPrice > 0)
-                        {
-                            fetchedPrices.Add((product.ProductId, newPrice.Value));
-                        }
-
-                        // Vẫn giữ Delay ngẫu nhiên cho luồng hiện tại để tránh Spam
-                        await Task.Delay(Random.Shared.Next(1000, 2500));
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, $"❌ Lỗi khi crawl SP ID: {product.ProductId}");
-                    }
-                    finally
-                    {
-                        semaphore.Release();
-                    }
-                }));
-            }
-
-            // Chờ tất cả các luồng hoàn thành việc lấy dữ liệu API
-            await Task.WhenAll(tasks);
-
-            // --- PHA 2: CẬP NHẬT DATABASE TUẦN TỰ (Để đảm bảo Thread-Safe cho DbContext) ---
             int successCount = 0;
-            foreach (var fetched in fetchedPrices)
+            int batchSize = 5; // Xử lý 5 sản phẩm cùng lúc
+            var productChunks = productsToUpdate.Chunk(batchSize);
+
+            foreach (var chunk in productChunks)
             {
-                var product = productsToUpdate.FirstOrDefault(p => p.ProductId == fetched.ProductId);
-                if (product != null)
+                // Sử dụng Task.WhenAll để lấy giá song song cho từng Batch
+                var fetchTasks = chunk.Select(product => FetchAndProcessPriceAsync(product)).ToList();
+
+                var results = await Task.WhenAll(fetchTasks);
+
+                // Lọc ra các kết quả thành công
+                var validUpdates = results.Where(r => r.IsSuccess).ToList();
+
+                foreach (var update in validUpdates)
                 {
-                    product.LatestPrice = fetched.NewPrice;
+                    var product = update.Product;
+                    product.LatestPrice = update.NewPrice;
                     product.LastUpdatedAt = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7));
 
                     _context.PriceHistory.Add(new PriceHistory
                     {
                         ProductId = product.ProductId,
-                        Price = fetched.NewPrice,
+                        Price = update.NewPrice,
                         CheckedAt = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7))
                     });
+
                     successCount++;
                 }
+
+                // Ghi DB sau mỗi lô (Batch) tránh tràn RAM
+                if (validUpdates.Any())
+                {
+                    await _context.SaveChangesAsync();
+                }
+
+                // Delay ngẫu nhiên giữa các Lô để tránh kích hoạt WAF
+                await Task.Delay(Random.Shared.Next(1500, 3000));
             }
 
-            // Ghi toàn bộ thay đổi xuống DB trong 1 lần duy nhất
-            await _context.SaveChangesAsync();
-
-            _logger.LogInformation($"✅ [Hangfire] Đã cập nhật thành công giá cho {successCount}/{productsToUpdate.Count} sản phẩm.");
+            _logger.LogInformation($"✅ [Hangfire/Dual-Layer] Đã cập nhật thành công giá cho {successCount}/{productsToUpdate.Count} sản phẩm.");
         }
 
-        private async Task<decimal?> FetchPriceFromApiAsync(string url)
+        /// <summary>
+        /// Wrapper method xử lý logic gọi API và map kết quả cho từng luồng Task
+        /// </summary>
+        private async Task<(bool IsSuccess, Product Product, decimal NewPrice)> FetchAndProcessPriceAsync(Product product)
         {
             try
             {
-                if (string.IsNullOrEmpty(url)) return null;
+                decimal? newPrice = await FetchTikiPriceAsync(product.ProductLink);
 
-                if (url.Contains("tiki.vn"))
+                if (newPrice.HasValue && newPrice > 0 && newPrice != product.LatestPrice)
                 {
-                    return await FetchTikiPriceAsync(url);
+                    return (true, product, newPrice.Value);
                 }
-
-                return null;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"⚠️ Lỗi trong FetchPriceFromApiAsync với URL: {url}");
-                return null;
+                _logger.LogError(ex, $"❌ Lỗi khi crawl SP ID: {product.ProductId}");
+            }
+
+            return (false, product, 0);
+        }
+
+        /// <summary>
+        /// 🔥 CORE DUAL-LAYER CRAWLING: Thử HttpClient trước -> Thất bại tự chuyển sang Playwright
+        /// </summary>
+        private async Task<JsonElement> FetchTikiApiWithFallbackAsync(string apiPath)
+        {
+            string fullUrl = $"{TikiBaseUrl}{apiPath}";
+            try
+            {
+                // TẦNG 1: Thử cào bằng HttpClient (Fast Crawl)
+                var response = await _httpClient.GetAsync(fullUrl);
+
+                // Nếu bị chặn (403, 429, 503...) sẽ throw HttpRequestException
+                response.EnsureSuccessStatusCode();
+
+                string jsonString = await response.Content.ReadAsStringAsync();
+                using var document = JsonDocument.Parse(jsonString);
+
+                return document.RootElement.Clone();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("HttpClient thất bại ({Msg}). Kích hoạt Playwright tàng hình cho URL: {Url}", ex.Message, fullUrl);
+
+                // TẦNG 2: Fallback sang Playwright Stealth Browser Service
+                return await _tikiBrowserService.FetchTikiApiAsync(apiPath);
             }
         }
 
+        /// <summary>
+        /// Tách ID và gọi API qua cơ chế Dual-Layer
+        /// </summary>
         private async Task<decimal?> FetchTikiPriceAsync(string productUrl)
         {
+            if (string.IsNullOrWhiteSpace(productUrl) || !productUrl.Contains("tiki.vn"))
+                return null;
+
             var match = Regex.Match(productUrl, @"p(\d+)\.html");
             if (!match.Success) return null;
 
@@ -148,31 +160,27 @@ namespace ePriTrackerBackend.Services
             var queryParams = HttpUtility.ParseQueryString(uri.Query);
             string? spid = queryParams["spid"];
 
-            string apiUrl = string.IsNullOrEmpty(spid)
-                ? $"https://tiki.vn/api/v2/products/{productId}"
-                : $"https://tiki.vn/api/v2/products/{productId}?spid={spid}";
+            string apiPath = string.IsNullOrEmpty(spid)
+                ? $"/api/v2/products/{productId}"
+                : $"/api/v2/products/{productId}?spid={spid}";
 
-            var response = await _httpClient.GetAsync(apiUrl);
-
-            if (response.IsSuccessStatusCode)
+            try
             {
-                var content = await response.Content.ReadAsStringAsync();
+                // Gọi API qua bọc Dual-Layer
+                JsonElement jsonResult = await FetchTikiApiWithFallbackAsync(apiPath);
 
-                if (content.TrimStart().StartsWith("<"))
-                {
-                    _logger.LogWarning($"⚠️ Bị Tiki chặn (trả về HTML) khi lấy giá SP {productId}.");
-                    return null;
-                }
-
-                using var jsonDoc = JsonDocument.Parse(content);
-
-                if (jsonDoc.RootElement.TryGetProperty("price", out var priceElement))
+                if (jsonResult.TryGetProperty("price", out var priceElement) && priceElement.ValueKind == JsonValueKind.Number)
                 {
                     return priceElement.GetDecimal();
                 }
-            }
 
-            return null;
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning($"⚠️ Không thể lấy giá từ API ngầm cho SP {productId}: {ex.Message}");
+                return null;
+            }
         }
     }
 }
