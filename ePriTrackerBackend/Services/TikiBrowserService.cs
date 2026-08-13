@@ -127,9 +127,28 @@ namespace ePriTrackerBackend.Services
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "[TikiBrowserService] Lỗi khi fetch {Path}. Thử tải lại session...", apiPath);
-                // Nếu bị chặn, đóng tab và ép tạo lại ở request sau
-                await _sharedPage!.CloseAsync();
-                _sharedPage = null;
+
+                // Nếu bị chặn hoặc crash, xử lý dọn dẹp an toàn
+                if (_sharedPage != null)
+                {
+                    try
+                    {
+                        // Thử đóng tab, nhưng có thể trình duyệt đã crash hẳn rồi
+                        await _sharedPage.CloseAsync();
+                    }
+                    catch (Exception closeEx)
+                    {
+                        // Chỉ log debug, không ném lỗi ra ngoài để tránh che mất lỗi chính (ex)
+                        _logger.LogDebug(closeEx, "[TikiBrowserService] Bỏ qua lỗi khi cố đóng page đã hỏng.");
+                    }
+                    finally
+                    {
+                        // BẮT BUỘC phải set về null dù CloseAsync có thành công hay không
+                        _sharedPage = null;
+                    }
+                }
+
+                // Ném lỗi ra ngoài kèm the inner exception để tầng trên (Controller/Service gọi nó) biết
                 throw new Exception("Lấy dữ liệu Tiki thất bại, đang thiết lập lại vòng đời trình duyệt.", ex);
             }
         }
