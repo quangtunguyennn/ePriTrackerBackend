@@ -5,7 +5,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using System.Security.Claims; // TÔI ĐÃ THÊM DÒNG NÀY ĐỂ ĐỌC TOKEN
+using System.Security.Claims;
 
 namespace ePriTrackerBackend.Controllers
 {
@@ -14,23 +14,31 @@ namespace ePriTrackerBackend.Controllers
     public class EventController : ControllerBase
     {
         private readonly IEventRepository _eventRepository;
+        private readonly IProductRepository _productRepository;
         private readonly ePriTrackerContext _context;
 
-        public EventController(IEventRepository eventRepository, ePriTrackerContext context)
+        public EventController(IEventRepository eventRepo, IProductRepository productRepo, ePriTrackerContext context)
         {
-            _eventRepository = eventRepository;
+            _eventRepository = eventRepo;
+            _productRepository = productRepo;
             _context = context;
         }
 
-        [HttpGet("getCurrentEvents")]
-        [Authorize(Roles = "User, Admin")]
-        public async Task<IActionResult> GetCurrentEvents()
+        // =======================================================
+        // PHẦN 1: API DÀNH CHO ADMIN QUẢN LÝ SỰ KIỆN
+        // =======================================================
+
+        [HttpGet("crawlPreview")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> CrawlPreviewEvents()
         {
             try
             {
+                // Lấy danh sách từ Tiki nhưng CHƯA lưu vào Database
                 var events = await _eventRepository.GetCurrentTikiEvents();
                 if (events == null || events.Count == 0)
                     return NotFound(new { message = "Không tìm thấy sự kiện nào hoặc API Tiki đã thay đổi." });
+
                 return Ok(events);
             }
             catch (Exception ex)
@@ -39,85 +47,113 @@ namespace ePriTrackerBackend.Controllers
             }
         }
 
-        [HttpGet("getPublishedEvents")]
-        [Authorize(Roles = "User, Admin")]
-        public async Task<IActionResult> GetPublishedEvents()
+        [HttpPost("postEvent")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> PostEvent([FromBody] Event tikiEvent)
+        {
+            try
+            {
+                // Kiểm tra xem sự kiện này Admin đã đăng trước đó chưa
+                bool exists = await _context.Event.AnyAsync(e => e.TikiEventId == tikiEvent.TikiEventId);
+
+                if (!exists)
+                {
+                    // Nếu chưa có, cấp ID mới và lưu vào bảng Event
+                    tikiEvent.EventId = Guid.NewGuid();
+                    tikiEvent.CreatedAt = DateTime.UtcNow;
+                    tikiEvent.IsPublished = true; // Mặc định khi mới tạo là đang đăng (hiển thị)
+
+                    _context.Event.Add(tikiEvent);
+                    await _context.SaveChangesAsync();
+
+                    return Ok(new { message = "Đã đăng sự kiện thành công!" });
+                }
+
+                return BadRequest(new { message = "Sự kiện này đã được đăng trước đó." });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        // API MỚI: Dành cho Admin lấy TẤT CẢ sự kiện (cả ẩn và hiện) để quản lý
+        [HttpGet("getAllEventsAdmin")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> GetAllEventsAdmin()
         {
             var events = await _context.Event.OrderByDescending(e => e.CreatedAt).ToListAsync();
             return Ok(events);
         }
 
-        [HttpGet("getUserProductsInEvent/{eventId}")]
-        [Authorize(Roles = "User, Admin")]
-        public async Task<IActionResult> GetUserProductsInEvent(Guid eventId)
+        // API MỚI: Bật/Tắt trạng thái IsPublished (Soft Delete / Gỡ bài / Đăng lại)
+        [HttpPut("togglePublish/{eventId}")]
+        [Authorize(Roles = "Admin")]
+        public async Task<IActionResult> TogglePublish(Guid eventId)
         {
-            // --- ĐOẠN ĐƯỢC SỬA: LẤY EMAIL TỪ TOKEN ---
-            var userEmail = User.FindFirstValue(ClaimTypes.Email) ?? User.FindFirstValue(ClaimTypes.Name);
+            var evt = await _context.Event.FindAsync(eventId);
+            if (evt == null) return NotFound(new { message = "Không tìm thấy sự kiện." });
 
-            if (string.IsNullOrEmpty(userEmail))
-                return Unauthorized("Token không hợp lệ hoặc không chứa thông tin User.");
-            // ------------------------------------------
+            evt.IsPublished = !evt.IsPublished; // Đảo ngược trạng thái
+            await _context.SaveChangesAsync();
 
-            var user = await _context.User.FirstOrDefaultAsync(u => u.Email == userEmail);
-            if (user == null) return Unauthorized("Không tìm thấy user");
-
-            var trackedProductIds = await _context.Item
-                .Where(i => i.UserId == user.UserId)
-                .Select(i => i.ProductId)
-                .ToListAsync();
-
-            var productsInEvent = await _context.EventProduct
-                .Where(ep => ep.EventId == eventId && trackedProductIds.Contains(ep.ProductId))
-                .Include(ep => ep.Product)
-                .Select(ep => ep.Product)
-                .ToListAsync();
-
-            return Ok(productsInEvent);
+            return Ok(new { message = evt.IsPublished ? "Đã khôi phục (Đăng lại) sự kiện!" : "Đã gỡ bài thành công!" });
         }
 
-        [HttpPost("crawlAndSave")]
-        [Authorize(Roles = "Admin")]
-        public async Task<IActionResult> CrawlAndSaveEvents()
+        // =======================================================
+        // PHẦN 2: API DÀNH CHO USER VÀ ADMIN ĐỂ HIỂN THỊ
+        // =======================================================
+
+        [HttpGet("getPublishedEvents")]
+        [Authorize(Roles = "User, Admin")] // Yêu cầu đăng nhập, cả User và Admin đều xem được
+        public async Task<IActionResult> GetPublishedEvents()
+        {
+            // TÍNH NĂNG TỰ ĐỘNG XÓA: Lấy ra các sự kiện cũ hơn 14 ngày
+            var expirationDate = DateTime.UtcNow.AddDays(-14);
+            var expiredEvents = await _context.Event.Where(e => e.CreatedAt < expirationDate).ToListAsync();
+
+            if (expiredEvents.Any())
+            {
+                _context.Event.RemoveRange(expiredEvents); // Dọn rác cứng khỏi DB
+                await _context.SaveChangesAsync();
+            }
+
+            // CHỈ TRẢ VỀ CHO USER CÁC SỰ KIỆN ĐANG BẬT ISPUBLISHED = TRUE
+            var events = await _context.Event
+                .Where(e => e.IsPublished == true)
+                .OrderByDescending(e => e.CreatedAt)
+                .ToListAsync();
+
+            return Ok(events);
+        }
+
+        [HttpGet("getLiveEventProducts/{eventId}")]
+        [Authorize(Roles = "User, Admin")]
+        public async Task<IActionResult> GetLiveEventProducts(Guid eventId)
         {
             try
             {
-                // 1. Gọi hàm Crawl sự kiện từ Tiki (hàm mà chúng ta đã viết hôm trước)
-                var crawledEvents = await _eventRepository.GetCurrentTikiEvents();
-                int addedCount = 0;
+                var evt = await _context.Event.FindAsync(eventId);
+                if (evt == null) return NotFound(new { message = "Không tìm thấy sự kiện trong hệ thống." });
 
-                foreach (var evt in crawledEvents)
+                // Cắt chuỗi để tránh dính các param (?itm_campaign=...)
+                string urlKey = evt.EventLink.TrimEnd('/').Split('/').Last().Split('?')[0];
+
+                var products = await _productRepository.GetLiveProductsFromEventAsync(urlKey);
+
+                // TÍNH NĂNG TỰ ĐỘNG XÓA: Nếu Tiki trả về rỗng -> Sự kiện đã kết thúc
+                if (products == null || products.Count == 0)
                 {
-                    // 2. Kiểm tra xem sự kiện này đã lưu trong DB chưa (Dựa vào TikiEventId)
-                    bool exists = await _context.Event.AnyAsync(e => e.TikiEventId == evt.Id);
-
-                    if (!exists)
-                    {
-                        var newEvent = new Event
-                        {
-                            TikiEventId = evt.Id,
-                            Title = evt.Title,
-                            ImageUrl = evt.ImageUrl,
-                            EventLink = evt.EventLink,
-                            Content = evt.Content,
-                            GroupZone = evt.GroupZone,
-                            CreatedAt = DateTime.UtcNow
-                        };
-                        _context.Event.Add(newEvent);
-                        addedCount++;
-                    }
+                    //_context.Event.Remove(evt);
+                    //await _context.SaveChangesAsync();
+                    return BadRequest(new { message = "Sự kiện này đã kết thúc trên Tiki và tự động được dọn dẹp khỏi hệ thống." });
                 }
 
-                // 3. Lưu xuống DB nếu có sự kiện mới
-                if (addedCount > 0)
-                {
-                    await _context.SaveChangesAsync();
-                }
-
-                return Ok(new { message = $"Crawl hoàn tất. Đã thêm {addedCount} sự kiện mới vào hệ thống." });
+                return Ok(products);
             }
             catch (Exception ex)
             {
-                return BadRequest(new { message = $"Lỗi khi Crawl và Lưu: {ex.Message}" });
+                return BadRequest(new { message = ex.Message });
             }
         }
     }

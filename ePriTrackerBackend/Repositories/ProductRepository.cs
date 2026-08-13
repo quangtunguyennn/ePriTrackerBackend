@@ -434,6 +434,51 @@ namespace ePriTrackerBackend.Repositories
                 .Replace('Đ', 'D');
         }
 
+        public async Task<List<LiveEventProductDTO>> GetLiveProductsFromEventAsync(string urlKey)
+        {
+            // Dùng API tìm kiếm của Tiki cho mọi sự kiện, nó ổn định hơn url_key
+            string searchKeyword = urlKey.Replace("-", " ");
+            string apiPath = $"/api/v2/products?limit=50&q={Uri.EscapeDataString(searchKeyword)}";
+            var liveProducts = new List<LiveEventProductDTO>();
+
+            try
+            {
+                // Tận dụng hàm bọc Fallback đã có sẵn trong ProductRepository
+                JsonElement root = await FetchTikiApiWithFallbackAsync(apiPath);
+
+                if (root.TryGetProperty("data", out JsonElement dataArray) && dataArray.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in dataArray.EnumerateArray())
+                    {
+                        if (!item.TryGetProperty("id", out var idProp)) continue;
+
+                        decimal price = item.TryGetProperty("price", out var p) && p.ValueKind == JsonValueKind.Number ? p.GetDecimal() : 0;
+                        decimal originalPrice = item.TryGetProperty("original_price", out var o) && o.ValueKind == JsonValueKind.Number ? o.GetDecimal() : price;
+                        string urlPath = item.TryGetProperty("url_path", out var u) ? u.GetString() ?? "" : "";
+
+                        liveProducts.Add(new LiveEventProductDTO
+                        {
+                            ProductId = idProp.GetInt64().ToString(),
+                            ProductName = item.TryGetProperty("name", out var n) ? n.GetString() ?? "Sản phẩm ẩn" : "Sản phẩm ẩn",
+                            InitialPrice = originalPrice,
+                            LatestPrice = price,
+                            ImageURL = item.TryGetProperty("thumbnail_url", out var i) ? i.GetString() ?? "" : "",
+                            ProductLink = string.IsNullOrEmpty(urlPath) ? "" : $"{TikiBaseUrl}/{urlPath.TrimStart('/')}",
+                            LastUpdatedAt = DateTime.UtcNow
+                        });
+                    }
+                }
+                return liveProducts;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Lỗi cào sự kiện từ ProductRepository: {Key}", urlKey);
+                return new List<LiveEventProductDTO>();
+            }
+        }
+
         #endregion
+
+
     }
 }

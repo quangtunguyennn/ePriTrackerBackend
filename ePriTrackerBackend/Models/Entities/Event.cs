@@ -21,6 +21,8 @@ namespace ePriTrackerBackend.Models.Entities
 
         public string? Content { get; set; }
 
+        public bool IsPublished { get; set; } = false;
+
         [MaxLength(100)]
         public string? GroupZone { get; set; }
 

@@ -12,5 +12,7 @@ namespace ePriTrackerBackend.Repositories
         public Task<List<SuggestionProductDTO>> GetAllBetterProducts(Guid productId);
         public Task<bool> DeleteProduct(Guid id, string userEmail);
         Task<List<SuggestionProductDTO>> RefreshSuggestions(Guid productId);
-    }
+        Task<List<LiveEventProductDTO>> GetLiveProductsFromEventAsync(string urlKey);
+    };
+
 }
