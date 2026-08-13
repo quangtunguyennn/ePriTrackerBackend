@@ -434,18 +434,21 @@ namespace ePriTrackerBackend.Repositories
                 .Replace('Đ', 'D');
         }
 
-        public async Task<List<LiveEventProductDTO>> GetLiveProductsFromEventAsync(string urlKey)
+        #endregion
+
+        // =========================================================================
+        // HÀM ĐƯỢC THAY THẾ: CÀO SẢN PHẨM SỰ KIỆN QUA PLAYWRIGHT (Trình duyệt ảo)
+        // =========================================================================
+        public async Task<List<LiveEventProductDTO>> GetLiveProductsFromEventAsync(string eventLink)
         {
-            // Dùng API tìm kiếm của Tiki cho mọi sự kiện, nó ổn định hơn url_key
-            string searchKeyword = urlKey.Replace("-", " ");
-            string apiPath = $"/api/v2/products?limit=50&q={Uri.EscapeDataString(searchKeyword)}";
             var liveProducts = new List<LiveEventProductDTO>();
 
             try
             {
-                // Tận dụng hàm bọc Fallback đã có sẵn trong ProductRepository
-                JsonElement root = await FetchTikiApiWithFallbackAsync(apiPath);
+                // Gọi sang Playwright để bóc tách DOM của trang Landing Page
+                JsonElement root = await _tikiBrowser.ScrapeEventPageAsync(eventLink);
 
+                // Dữ liệu giả lập API từ Playwright nhả về, dùng lại logic map DTO cũ
                 if (root.TryGetProperty("data", out JsonElement dataArray) && dataArray.ValueKind == JsonValueKind.Array)
                 {
                     foreach (var item in dataArray.EnumerateArray())
@@ -464,7 +467,7 @@ namespace ePriTrackerBackend.Repositories
                             LatestPrice = price,
                             ImageURL = item.TryGetProperty("thumbnail_url", out var i) ? i.GetString() ?? "" : "",
                             ProductLink = string.IsNullOrEmpty(urlPath) ? "" : $"{TikiBaseUrl}/{urlPath.TrimStart('/')}",
-                            LastUpdatedAt = DateTime.UtcNow
+                            LastUpdatedAt = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7)) // Đã sửa lỗi Type Mismatch tại đây
                         });
                     }
                 }
@@ -472,13 +475,9 @@ namespace ePriTrackerBackend.Repositories
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Lỗi cào sự kiện từ ProductRepository: {Key}", urlKey);
-                return new List<LiveEventProductDTO>();
+                _logger.LogError(ex, "Lỗi cào sự kiện từ ProductRepository: {Key}", eventLink);
+                return liveProducts;
             }
         }
-
-        #endregion
-
-
     }
 }

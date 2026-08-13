@@ -136,11 +136,7 @@ namespace ePriTrackerBackend.Controllers
                 var evt = await _context.Event.FindAsync(eventId);
                 if (evt == null) return NotFound(new { message = "Không tìm thấy sự kiện trong hệ thống." });
 
-                // Cắt chuỗi để tránh dính các param (?itm_campaign=...)
-                string urlKey = evt.EventLink.TrimEnd('/').Split('/').Last().Split('?')[0];
-
-                var products = await _productRepository.GetLiveProductsFromEventAsync(urlKey);
-
+                var products = await _productRepository.GetLiveProductsFromEventAsync(evt.EventLink);
                 // TÍNH NĂNG TỰ ĐỘNG XÓA: Nếu Tiki trả về rỗng -> Sự kiện đã kết thúc
                 if (products == null || products.Count == 0)
                 {
