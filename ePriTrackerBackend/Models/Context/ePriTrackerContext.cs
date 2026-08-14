@@ -14,6 +14,9 @@ namespace ePriTrackerBackend.Models.Context
         public DbSet<SuggestionProduct> SuggestionProduct { get; set; }
 
         public DbSet<PriceHistory> PriceHistory { get; set; }
+        public DbSet<Role> Role { get; set; }
+        public DbSet<UserRole> UserRole { get; set; }
+
         public DbSet<Event> Event { get; set; }
         public DbSet<EventProduct> EventProduct { get; set; }
 
