@@ -34,12 +34,30 @@ namespace ePriTrackerBackend.Controllers
         {
             try
             {
-                // Lấy danh sách từ Tiki nhưng CHƯA lưu vào Database
-                var events = await _eventRepository.GetCurrentTikiEvents();
-                if (events == null || events.Count == 0)
+                var scrapedEvents = await _eventRepository.GetCurrentTikiEvents();
+                if (scrapedEvents == null || scrapedEvents.Count == 0)
                     return NotFound(new { message = "Không tìm thấy sự kiện nào hoặc API Tiki đã thay đổi." });
 
-                return Ok(events);
+                var dbEvents = await _context.Event.ToListAsync();
+
+                foreach (var scraped in scrapedEvents)
+                {
+                    // Dùng Title để đối chiếu thay vì TikiEventId
+                    var existingDbEvent = dbEvents.FirstOrDefault(e => e.Title == scraped.Title);
+
+                    if (existingDbEvent != null)
+                    {
+                        // Lấy đúng trạng thái và EventId từ DB cũ sang để đồng bộ
+                        scraped.IsPublished = existingDbEvent.IsPublished;
+                        scraped.EventId = existingDbEvent.EventId;
+                    }
+                    else
+                    {
+                        scraped.IsPublished = false;
+                    }
+                }
+
+                return Ok(scrapedEvents);
             }
             catch (Exception ex)
             {
@@ -53,23 +71,31 @@ namespace ePriTrackerBackend.Controllers
         {
             try
             {
-                // Kiểm tra xem sự kiện này Admin đã đăng trước đó chưa
-                bool exists = await _context.Event.AnyAsync(e => e.TikiEventId == tikiEvent.TikiEventId);
+                // Kiểm tra dựa trên Tiêu đề (Title) hoặc Đường dẫn (EventLink) của sự kiện
+                var existingEvent = await _context.Event
+                    .FirstOrDefaultAsync(e => e.Title == tikiEvent.Title || e.EventLink == tikiEvent.EventLink);
 
-                if (!exists)
+                if (existingEvent == null)
                 {
-                    // Nếu chưa có, cấp ID mới và lưu vào bảng Event
+                    // Nếu chưa có, tạo mới hoàn toàn
                     tikiEvent.EventId = Guid.NewGuid();
                     tikiEvent.CreatedAt = DateTime.UtcNow;
-                    tikiEvent.IsPublished = true; // Mặc định khi mới tạo là đang đăng (hiển thị)
+                    tikiEvent.IsPublished = true;
 
                     _context.Event.Add(tikiEvent);
                     await _context.SaveChangesAsync();
 
                     return Ok(new { message = "Đã đăng sự kiện thành công!" });
                 }
+                else
+                {
+                    // Nếu đã tồn tại trong DB, chỉ cần cập nhật lại trạng thái thành Published = true và giữ nguyên ID cũ
+                    existingEvent.IsPublished = true;
+                    existingEvent.CreatedAt = DateTime.UtcNow; // Cập nhật lại thời gian mới nhất nếu muốn
 
-                return BadRequest(new { message = "Sự kiện này đã được đăng trước đó." });
+                    await _context.SaveChangesAsync();
+                    return Ok(new { message = "Sự kiện này đã có sẵn, đã cập nhật trạng thái hiển thị!" });
+                }
             }
             catch (Exception ex)
             {

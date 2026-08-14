@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using ePriTrackerBackend.Models.Context;
 
@@ -11,9 +12,11 @@ using ePriTrackerBackend.Models.Context;
 namespace ePriTrackerBackend.Migrations
 {
     [DbContext(typeof(ePriTrackerContext))]
-    partial class ePriTrackerContextModelSnapshot : ModelSnapshot
+    [Migration("20260814120641_AddUserRoleTable")]
+    partial class AddUserRoleTable
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
