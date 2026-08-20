@@ -58,7 +58,7 @@ builder.Services.AddScoped<IProductRepository, ProductRepository>();
 builder.Services.AddScoped<IPriceCrawlerService, PriceCrawlerService>();
 builder.Services.AddScoped<ISuggestionsCrawlerService, SuggestionCrawlService>();
 builder.Services.AddScoped<IEventRepository, EventRepository>();
-
+builder.Services.AddScoped<IEventCacheService, EventCacheService>();
 
 builder.Services.AddControllers();
 
@@ -163,6 +163,14 @@ RecurringJob.AddOrUpdate<ISuggestionsCrawlerService>(
     "0 */6 * * *",
     new RecurringJobOptions { TimeZone = vietnamTz }
 );
+
+RecurringJob.AddOrUpdate<IEventCacheService>(
+    "refresh-event-cache-job",
+    service => service.RefreshLiveEventProductsCacheAsync(),
+    "*/30 * * * *",
+    new RecurringJobOptions { TimeZone = vietnamTz }
+);
+BackgroundJob.Enqueue<IEventCacheService>(service => service.RefreshLiveEventProductsCacheAsync());
 
 app.MapControllers();
 
