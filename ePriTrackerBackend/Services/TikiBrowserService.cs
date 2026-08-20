@@ -184,128 +184,138 @@ namespace ePriTrackerBackend.Services
                 // Mở trang sự kiện
                 await eventPage.GotoAsync(eventUrl, new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30000 });
 
-                // KỊCH BẢN THIỆN XẠ: Nhắm thẳng vào thuộc tính data-brick-id của Tiki
+                // KỊCH BẢN THIỆN XẠ: Rút ngắn thời gian quét mẫu để Frontend không bị Timeout
                 await eventPage.EvaluateAsync(@"async () => {
-                    let lastHeight = document.body.scrollHeight;
-                    let retries = 0;
-                    
-                    for (let i = 0; i < 35; i++) {
-                        // 1. Cuộn chuột xuống
-                        window.scrollBy(0, 1000); 
-                        await new Promise(resolve => setTimeout(resolve, 800)); 
-                        
-                        // 2. TÌM VÀ BẤM NÚT DỰA VÀO ATTRIBUTE ĐỘC NHẤT
-                        let clicked = false;
-                        
-                        // Nhờ ảnh Inspect, ta bắt chính xác data-brick-id=""see_more_product_button""
-                        const loadMoreBtns = document.querySelectorAll('[data-brick-id=""see_more_product_button""], [data-brick-label=""Xem thêm""]');
-                        
-                        for (const btn of loadMoreBtns) {
-                            const rect = btn.getBoundingClientRect();
-                            // Đảm bảo nút đang hiện trên màn hình
-                            if (rect.width > 0 && rect.height > 0) {
-                                try {
-                                    // Cuộn nút ra giữa màn hình
-                                    btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                    
-                                    // Kỹ thuật bấm nút bạo lực (bỏ qua các lớp overlay che khuất)
-                                    btn.click(); 
-                                    clicked = true;
-                                } catch(e) {}
-                            }
-                        }
-                        
-                        // Nếu cách trên thất bại, dự phòng tìm button chứa text
-                        if (!clicked) {
-                            const allButtons = document.querySelectorAll('button');
-                            for (const btn of allButtons) {
-                                if ((btn.innerText || '').trim().toLowerCase() === 'xem thêm') {
-                                    const rect = btn.getBoundingClientRect();
-                                    if (rect.width > 0 && rect.height > 0) {
-                                        btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                        btn.click();
-                                        clicked = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // Chờ Tiki load hàng
-                        if (clicked) {
-                            await new Promise(resolve => setTimeout(resolve, 1500)); 
-                        }
-
-                        // 3. Kiểm tra đáy
-                        let newHeight = document.body.scrollHeight;
-                        if (newHeight === lastHeight) {
-                            retries++;
-                            if (retries >= 3) break; 
-                        } else {
-                            retries = 0;
-                            lastHeight = newHeight;
-                        }
+            let lastHeight = document.body.scrollHeight;
+            
+            // CHỈ CUỘN 5 LẦN ĐỂ PREVIEW NHANH (~5-7 giây)
+            // Nếu muốn cào sâu hơn, hãy để Hangfire gọi riêng một hàm khác với số vòng lặp cao hơn
+            for (let i = 0; i < 5; i++) {
+                window.scrollBy(0, 1500); 
+                await new Promise(resolve => setTimeout(resolve, 600)); 
+                
+                let clicked = false;
+                const loadMoreBtns = document.querySelectorAll('[data-brick-id=""see_more_product_button""], [data-brick-label=""Xem thêm""]');
+                
+                for (const btn of loadMoreBtns) {
+                    const rect = btn.getBoundingClientRect();
+                    if (rect.width > 0 && rect.height > 0) {
+                        try {
+                            btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            btn.click(); 
+                            clicked = true;
+                        } catch(e) {}
                     }
-                }");
+                }
+                
+                if (clicked) {
+                    await new Promise(resolve => setTimeout(resolve, 1000)); 
+                }
 
-                // Script nhúng vào trình duyệt ảo: Quét toàn bộ thẻ HTML chứa link sản phẩm
+                let newHeight = document.body.scrollHeight;
+                if (newHeight === lastHeight) break; 
+                lastHeight = newHeight;
+            }
+        }");
+
+                // KỊCH BẢN MỚI: BÓC TÁCH CHUẨN XÁC DỰA TRÊN HTML THỰC TẾ
                 var jsScraper = @"
-                    () => {
-                        const items = [];
-                        // Bắt tất cả các thẻ a có link chứa '-p' (Ký hiệu sản phẩm của Tiki)
-                        const productLinks = document.querySelectorAll('a[href*=""-p""]');
+            () => {
+                const items = [];
+                // Bắt bao quát hơn: Theo id hoặc class chứa chữ product-item
+                const productNodes = document.querySelectorAll('[data-view-id=""product_list_item""], a.product-item, div.product-item');
+                
+                productNodes.forEach(node => {
+                    try {
+                        const linkEl = node.tagName === 'A' ? node : node.querySelector('a');
+                        if (!linkEl) return;
                         
-                        productLinks.forEach(link => {
-                            try {
-                                const url = link.href;
-                                const idMatch = url.match(/-p(\d+)\.html/);
-                                if (!idMatch) return;
-                                
-                                const id = parseInt(idMatch[1]);
-                                
-                                // Tránh thêm trùng lặp sản phẩm
-                                if (items.find(x => x.id === id)) return;
+                        let url = linkEl.getAttribute('href') || '';
+                        if (!url) return;
+                        if (url.startsWith('/')) url = 'https://tiki.vn' + url;
 
-                                const nameEl = link.querySelector('h3') || link.querySelector('[class*=""name""]');
-                                const name = nameEl ? nameEl.innerText.trim() : 'Sản phẩm sự kiện';
-                                
-                                const imgEl = link.querySelector('img');
-                                let imgUrl = '';
-                                if (imgEl) {
-                                    imgUrl = imgEl.getAttribute('data-src') || imgEl.src || imgEl.getAttribute('srcset')?.split(' ')[0] || '';
-                                    if (imgUrl.startsWith('data:image')) imgUrl = ''; // Bỏ placeholder base64
-                                }
-                                
-                                const priceEl = link.querySelector('[class*=""price""]');
-                                let price = 0;
-                                if (priceEl) {
-                                    const priceText = priceEl.innerText.replace(/[^\d]/g, '');
-                                    if (priceText) price = parseInt(priceText, 10);
-                                }
-                                
-                                const originalPriceEl = link.querySelector('[class*=""original""]') || link.querySelector('del');
-                                let originalPrice = price;
-                                if (originalPriceEl) {
-                                    const origText = originalPriceEl.innerText.replace(/[^\d]/g, '');
-                                    if (origText) originalPrice = parseInt(origText, 10);
-                                }
-                                
-                                if (price > 0) {
-                                    items.push({
-                                        id: id,
-                                        name: name,
-                                        price: price,
-                                        original_price: originalPrice,
-                                        thumbnail_url: imgUrl,
-                                        url_path: url.replace('https://tiki.vn/', '')
-                                    });
-                                }
-                            } catch(e) { }
-                        });
+                        let id = 0;
+                        const trackingData = node.getAttribute('data-view-content') || linkEl.getAttribute('data-view-content');
+                        if (trackingData) {
+                            try { id = JSON.parse(trackingData).click_data.id; } catch(e) {}
+                        }
                         
-                        return { data: items }; 
-                    }
-                ";
+                        if (id === 0) {
+                            const idMatch = url.match(/-p(\d+)\.html/);
+                            if (idMatch) id = parseInt(idMatch[1]);
+                        }
+                        
+                        if (id === 0 || items.find(x => x.id === id)) return;
+
+                        // 1. LẤY TÊN (Dùng thẻ H3 hoặc alt của ảnh)
+                        let name = '';
+                        const h3El = node.querySelector('h3');
+                        if (h3El) name = h3El.textContent.trim();
+                        
+                        const imgEl = node.querySelector('img');
+                        if (!name && imgEl) name = imgEl.getAttribute('alt') || '';
+                        
+                        if (!name || name === 'product_image_badge') {
+                            const textLines = node.innerText.split('\n').map(x => x.trim()).filter(x => x !== '');
+                            if (textLines.length > 0) name = textLines[0];
+                        }
+
+                        // 2. LẤY ẢNH
+                        let imgUrl = '';
+                        const sourceEl = node.querySelector('picture source');
+                        if (sourceEl) imgUrl = sourceEl.getAttribute('srcset') || '';
+                        if (!imgUrl && imgEl) imgUrl = imgEl.getAttribute('data-src') || imgEl.src || imgEl.getAttribute('srcset') || '';
+                        
+                        imgUrl = imgUrl.split(' ')[0]; 
+                        if (imgUrl.startsWith('data:image')) imgUrl = '';
+
+                        // 3. LẤY GIÁ BÁN VÀ GIÁ GỐC (Dò tìm thông minh)
+                        let price = 0;
+                        let originalPrice = 0;
+
+                        // Ưu tiên 1: Lấy theo class thực tế của Tiki
+                        const priceEl = node.querySelector('.price-discount__price') || node.querySelector('[class*=""price""]:not([class*=""original""])');
+                        if (priceEl && priceEl.textContent.includes('₫')) {
+                            price = parseInt(priceEl.textContent.replace(/[^\d]/g, ''), 10) || 0;
+                        }
+
+                        const origPriceEl = node.querySelector('.price-discount__original-price') || node.querySelector('[class*=""original""]');
+                        if (origPriceEl && origPriceEl.textContent.includes('₫')) {
+                            originalPrice = parseInt(origPriceEl.textContent.replace(/[^\d]/g, ''), 10) || 0;
+                        }
+
+                        // Ưu tiên 2: Vét cạn (Nếu Tiki đổi class, tìm thẻ bất kỳ chứa chữ ₫)
+                        if (price === 0) {
+                            const allNodesWithPrice = Array.from(node.querySelectorAll('*'))
+                                .filter(el => el.children.length <= 1 && el.textContent.includes('₫'))
+                                .map(el => parseInt(el.textContent.replace(/[^\d]/g, ''), 10))
+                                .filter(val => !isNaN(val) && val > 0);
+                                
+                            if (allNodesWithPrice.length > 0) {
+                                price = allNodesWithPrice[0];
+                                originalPrice = allNodesWithPrice.length > 1 ? allNodesWithPrice[1] : price;
+                            }
+                        }
+
+                        if (originalPrice === 0) originalPrice = price;
+
+                        // Chỉ add vào list khi có tên và id hợp lệ
+                        if (id > 0 && name) {
+                            items.push({
+                                id: id,
+                                name: name,
+                                price: price,
+                                original_price: originalPrice,
+                                thumbnail_url: imgUrl,
+                                url_path: url.replace('https://tiki.vn/', '')
+                            });
+                        }
+                    } catch(e) { }
+                });
+                
+                return { data: items }; 
+            }
+        ";
 
                 // Hứng kết quả DOM giả lập thành JsonElement
                 var jsonResult = await eventPage.EvaluateAsync<JsonElement>(jsScraper);
