@@ -2,6 +2,7 @@
 using ePriTrackerBackend.Models.Entities;
 using ePriTrackerBackend.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -15,6 +16,7 @@ namespace ePriTrackerBackend.Services
         private readonly ITikiBrowserService _tikiBrowserService; // Tầng 2: Vũ khí tàng hình Playwright
         private readonly ILogger<PriceCrawlerService> _logger;
         private readonly ScraperMetricsService _metrics;
+        private readonly IConfiguration _configuration;
 
         // TẦNG 1: Tái sử dụng HttpClient để crawl tốc độ cao, tiết kiệm RAM/CPU
         private static readonly HttpClient _httpClient = new HttpClient();
@@ -30,7 +32,8 @@ namespace ePriTrackerBackend.Services
             ePriTrackerContext context,
             ITikiBrowserService tikiBrowserService,
             ILogger<PriceCrawlerService> logger,
-            ScraperMetricsService metrics)
+            ScraperMetricsService metrics,
+            IConfiguration configuration)
         {
             _context = context ?? throw new ArgumentNullException(nameof(context));
             _tikiBrowserService = tikiBrowserService ?? throw new ArgumentNullException(nameof(tikiBrowserService));
@@ -124,6 +127,7 @@ namespace ePriTrackerBackend.Services
         private async Task<JsonElement> FetchTikiApiWithFallbackAsync(string apiPath)
         {
             string fullUrl = $"{TikiBaseUrl}{apiPath}";
+            bool isMetricsEnabled = _configuration.GetValue<bool>("FeatureToggles:EnableScraperMetrics");
             try
             {
                 // TẦNG 1: Thử cào bằng HttpClient (Fast Crawl)
@@ -136,7 +140,10 @@ namespace ePriTrackerBackend.Services
                 using var document = JsonDocument.Parse(jsonString);
 
                 // GHI NHẬN THÀNH CÔNG CHO HTTPCLIENT
-                _metrics.RecordHttpClientSuccess();
+                if (isMetricsEnabled)
+                {
+                    _metrics.RecordHttpClientSuccess();
+                }
 
                 return document.RootElement.Clone();
             }
@@ -150,7 +157,10 @@ namespace ePriTrackerBackend.Services
                     var result = await _tikiBrowserService.FetchTikiApiAsync(apiPath);
 
                     // GHI NHẬN THÀNH CÔNG CHO PLAYWRIGHT
-                    _metrics.RecordPlaywrightSuccess();
+                    if (isMetricsEnabled)
+                    {
+                        _metrics.RecordPlaywrightSuccess();
+                    }
 
                     return result;
                 }
@@ -158,7 +168,11 @@ namespace ePriTrackerBackend.Services
                 {
                     // CẢ 2 TẦNG ĐỀU THẤT BẠI
                     _logger.LogError("Playwright cũng thất bại. Bỏ cuộc cho URL: {Url}", fullUrl);
-                    _metrics.RecordFailure();
+                    // ---> [MỚI THÊM] VỊ TRÍ 3: GHI NHẬN THẤT BẠI
+                    if (isMetricsEnabled)
+                    {
+                        _metrics.RecordFailure();
+                    }
                     throw; // Ném lỗi ra ngoài để FetchTikiPriceAsync xử lý return null
                 }
             }

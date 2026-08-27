@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Playwright;
 using System.Text.Json;
 
@@ -14,6 +15,7 @@ namespace ePriTrackerBackend.Services
     {
         private readonly ILogger<TikiBrowserService> _logger;
         private readonly ScraperMetricsService _metrics;
+        private readonly IConfiguration _configuration;
         private IPlaywright? _playwright;
         private IBrowser? _browser;
         private IPage? _sharedPage;
@@ -34,10 +36,11 @@ namespace ePriTrackerBackend.Services
             );
         ";
 
-        public TikiBrowserService(ILogger<TikiBrowserService> logger, ScraperMetricsService metrics)
+        public TikiBrowserService(ILogger<TikiBrowserService> logger, ScraperMetricsService metrics, IConfiguration configuration)
         {
             _logger = logger;
             _metrics = metrics ?? throw new ArgumentNullException(nameof(metrics));
+            _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         }
 
         private async Task EnsureBrowserReadyAsync()
@@ -164,6 +167,7 @@ namespace ePriTrackerBackend.Services
         {
             await EnsureBrowserReadyAsync();
             IPage? eventPage = null;
+            bool isMetricsEnabled = _configuration.GetValue<bool>("FeatureToggles:EnableScraperMetrics");
 
             try
             {
@@ -323,13 +327,21 @@ namespace ePriTrackerBackend.Services
                 var jsonResult = await eventPage.EvaluateAsync<JsonElement>(jsScraper);
 
                 _logger.LogInformation("[TikiBrowserService] Quét DOM thành công, thu thập được danh sách mục tiêu.");
-                _metrics.RecordPlaywrightSuccess();
+                // THÀNH CÔNG (PLAYWRIGHT)
+                if (isMetricsEnabled)
+                {
+                    _metrics.RecordPlaywrightSuccess();
+                }
                 return jsonResult;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[TikiBrowserService] Bóc tách DOM thất bại: {Url}", eventUrl);
-                _metrics.RecordFailure();
+                // THẤT BẠI
+                if (isMetricsEnabled)
+                {
+                    _metrics.RecordFailure();
+                }
                 // Tạo JSON rỗng an toàn để hệ thống không sập
                 using var doc = JsonDocument.Parse("{ \"data\": [] }");
                 return doc.RootElement.Clone();

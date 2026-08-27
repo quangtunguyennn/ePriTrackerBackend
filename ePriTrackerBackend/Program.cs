@@ -153,8 +153,8 @@ catch (TimeZoneNotFoundException)
 RecurringJob.AddOrUpdate<IPriceCrawlerService>(
     "update-prices-job",
     service => service.UpdateAllTrackedProductPricesAsync(),
-    //"0 */6 * * *",
-    "*/2 * * * *",
+    "0 */6 * * *",
+    //"*/2 * * * *",
     new RecurringJobOptions { TimeZone = vietnamTz }
 );
 
@@ -162,16 +162,16 @@ RecurringJob.AddOrUpdate<IPriceCrawlerService>(
 RecurringJob.AddOrUpdate<ISuggestionsCrawlerService>(
     "update-suggestions-job",
     service => service.UpdateAllTrackedProductSuggestionsAsync(CancellationToken.None),
-    //"0 */6 * * *",
-    "*/2 * * * *",
+    "0 */6 * * *",
+    //"*/2 * * * *",
     new RecurringJobOptions { TimeZone = vietnamTz }
 );
 
 RecurringJob.AddOrUpdate<IEventCacheService>(
     "refresh-event-cache-job",
     service => service.RefreshLiveEventProductsCacheAsync(),
-    //"*/30 * * * *",
-    "*/2 * * * *",
+    "*/30 * * * *",
+    //"*/2 * * * *",
     new RecurringJobOptions { TimeZone = vietnamTz }
 );
 BackgroundJob.Enqueue<IEventCacheService>(service => service.RefreshLiveEventProductsCacheAsync());
