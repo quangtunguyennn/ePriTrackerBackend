@@ -1,11 +1,11 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using ePriTrackerBackend.Models.Context;
+using ePriTrackerBackend.Models.Entities;
+using ePriTrackerBackend.Services;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Web;
-using ePriTrackerBackend.Models.Context;
-using ePriTrackerBackend.Models.Entities;
-using ePriTrackerBackend.Services;
-using Microsoft.Extensions.Logging;
 
 namespace ePriTrackerBackend.Services
 {
@@ -14,6 +14,7 @@ namespace ePriTrackerBackend.Services
         private readonly ePriTrackerContext _context;
         private readonly ITikiBrowserService _tikiBrowserService; // Tầng 2: Vũ khí tàng hình Playwright
         private readonly ILogger<PriceCrawlerService> _logger;
+        private readonly ScraperMetricsService _metrics;
 
         // TẦNG 1: Tái sử dụng HttpClient để crawl tốc độ cao, tiết kiệm RAM/CPU
         private static readonly HttpClient _httpClient = new HttpClient();
@@ -28,11 +29,13 @@ namespace ePriTrackerBackend.Services
         public PriceCrawlerService(
             ePriTrackerContext context,
             ITikiBrowserService tikiBrowserService,
-            ILogger<PriceCrawlerService> logger)
+            ILogger<PriceCrawlerService> logger,
+            ScraperMetricsService metrics)
         {
             _context = context ?? throw new ArgumentNullException(nameof(context));
             _tikiBrowserService = tikiBrowserService ?? throw new ArgumentNullException(nameof(tikiBrowserService));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _metrics = metrics ?? throw new ArgumentNullException(nameof(metrics));
         }
 
         public async Task UpdateAllTrackedProductPricesAsync()
@@ -116,7 +119,7 @@ namespace ePriTrackerBackend.Services
         }
 
         /// <summary>
-        /// 🔥 CORE DUAL-LAYER CRAWLING: Thử HttpClient trước -> Thất bại tự chuyển sang Playwright
+        /// CORE DUAL-LAYER CRAWLING: Thử HttpClient trước -> Thất bại tự chuyển sang Playwright
         /// </summary>
         private async Task<JsonElement> FetchTikiApiWithFallbackAsync(string apiPath)
         {
@@ -132,14 +135,32 @@ namespace ePriTrackerBackend.Services
                 string jsonString = await response.Content.ReadAsStringAsync();
                 using var document = JsonDocument.Parse(jsonString);
 
+                // GHI NHẬN THÀNH CÔNG CHO HTTPCLIENT
+                _metrics.RecordHttpClientSuccess();
+
                 return document.RootElement.Clone();
             }
             catch (Exception ex)
             {
                 _logger.LogWarning("HttpClient thất bại ({Msg}). Kích hoạt Playwright tàng hình cho URL: {Url}", ex.Message, fullUrl);
 
-                // TẦNG 2: Fallback sang Playwright Stealth Browser Service
-                return await _tikiBrowserService.FetchTikiApiAsync(apiPath);
+                try
+                {
+                    // TẦNG 2: Fallback sang Playwright Stealth Browser Service
+                    var result = await _tikiBrowserService.FetchTikiApiAsync(apiPath);
+
+                    // GHI NHẬN THÀNH CÔNG CHO PLAYWRIGHT
+                    _metrics.RecordPlaywrightSuccess();
+
+                    return result;
+                }
+                catch (Exception fallbackEx)
+                {
+                    // CẢ 2 TẦNG ĐỀU THẤT BẠI
+                    _logger.LogError("Playwright cũng thất bại. Bỏ cuộc cho URL: {Url}", fullUrl);
+                    _metrics.RecordFailure();
+                    throw; // Ném lỗi ra ngoài để FetchTikiPriceAsync xử lý return null
+                }
             }
         }
 
