@@ -1,6 +1,6 @@
-﻿using ePriTrackerBackend.Models.DTOs;
-using ePriTrackerBackend.Models.Entities;
-using ePriTrackerBackend.Repositories;
+﻿using ePriTrackerBackend.Models.Entities;
+using ePriTrackerBackend.Services.Products;
+using ePriTrackerBackend.Services.Suggestions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -10,10 +10,13 @@ namespace ePriTrackerBackend.Controllers
     [ApiController]
     public class ProductController : ControllerBase
     {
-        private readonly IProductRepository _repository;
-        public ProductController(IProductRepository repository)
+        private readonly IProductTrackingService _tracking;
+        private readonly ISuggestionService _suggestions;
+
+        public ProductController(IProductTrackingService tracking, ISuggestionService suggestions)
         {
-            _repository = repository;
+            _tracking = tracking;
+            _suggestions = suggestions;
         }
 
         // Endpoint: POST /api/product/add
@@ -26,7 +29,7 @@ namespace ePriTrackerBackend.Controllers
                 var userEmail = User?.Identity?.Name;
                 if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
 
-                await _repository.AddProduct(productLink, userEmail);
+                await _tracking.AddProductAsync(productLink, userEmail);
                 return Ok(new { message = "Thêm sản phẩm vào danh sách theo dõi thành công!" });
             }
             catch (Exception ex)
@@ -43,7 +46,7 @@ namespace ePriTrackerBackend.Controllers
             var userEmail = User?.Identity?.Name;
             if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
 
-            var products = await _repository.GetAll(userEmail);
+            var products = await _tracking.GetTrackedProductsAsync(userEmail);
             return Ok(products);
         }
 
@@ -54,8 +57,9 @@ namespace ePriTrackerBackend.Controllers
         {
             var userEmail = User?.Identity?.Name;
             if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
+            if (!await CanAccessAsync(id, userEmail)) return ProductNotFound();
 
-            var product = await _repository.GetById(id);
+            var product = await _tracking.GetProductAsync(id);
 
             if (product == null) return NotFound(new { message = "Không tìm thấy sản phẩm." });
 
@@ -69,17 +73,14 @@ namespace ePriTrackerBackend.Controllers
         {
             var userEmail = User?.Identity?.Name;
             if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
+            if (!await CanAccessAsync(productId, userEmail)) return ProductNotFound();
             try
             {
-                // Controller gọi xuống Repository
-                var result = await _repository.GetAllBetterProducts(productId);
-
-                // Trả về HTTP Status 200 (Thành công) kèm dữ liệu
+                var result = await _suggestions.GetSuggestionsAsync(productId);
                 return Ok(result);
             }
             catch (Exception ex)
             {
-                // Trả về HTTP Status 400 (Lỗi) kèm câu thông báo lỗi
                 return BadRequest(new { message = ex.Message });
             }
         }
@@ -94,8 +95,7 @@ namespace ePriTrackerBackend.Controllers
 
             try
             {
-                // Đã truyền thêm userEmail vào để khớp với Interface mới và đảm bảo bảo mật
-                bool isDeleted = await _repository.DeleteProduct(id, userEmail);
+                bool isDeleted = await _tracking.UntrackProductAsync(id, userEmail);
 
                 if (!isDeleted)
                 {
@@ -106,20 +106,27 @@ namespace ePriTrackerBackend.Controllers
             }
             catch (Exception ex)
             {
-                // Bắt lỗi từ DB quăng ra (như "Sản phẩm không tồn tại")
+                // Bắt lỗi nghiệp vụ (như "Sản phẩm không tồn tại")
                 return BadRequest(new { message = ex.Message });
             }
         }
 
-        [Authorize(Roles ="User")]
+        [Authorize(Roles = "User")]
         [HttpGet("/api/product/refresh-suggestions")]
         public async Task<IActionResult> RefreshSuggestions(Guid productId)
         {
             var userEmail = User?.Identity?.Name;
             if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
+            if (!await CanAccessAsync(productId, userEmail)) return ProductNotFound();
 
-            var suggestions = await _repository.RefreshSuggestions(productId);
+            var suggestions = await _suggestions.RefreshSuggestionsAsync(productId);
             return Ok(suggestions);
         }
+
+        // Trả 404 (không phải 403) để không lộ việc sản phẩm có tồn tại hay không
+        private Task<bool> CanAccessAsync(Guid productId, string userEmail)
+            => _tracking.CanAccessProductAsync(productId, userEmail, User.IsInRole("Admin"));
+
+        private NotFoundObjectResult ProductNotFound() => NotFound(new { message = "Không tìm thấy sản phẩm." });
     }
 }

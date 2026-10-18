@@ -1,6 +1,132 @@
-@ePriTrackerBackend_HostAddress = http://localhost:5130
+### ePriTracker – test thủ công 18 endpoint (chạy trên Visual Studio, IIS Express)
+### Thứ tự: Auth → Product → Event → Metrics. Các request XOÁ/ĐỔI TRẠNG THÁI để cuối.
 
-GET {{ePriTrackerBackend_HostAddress}}/weatherforecast/
-Accept: application/json
+@host = https://localhost:44338
+@userEmail = smoke.user@epritracker.test
+@userPassword = Smoke@12345
+@adminEmail = <email tài khoản Admin của bạn>
+@adminPassword = <mật khẩu Admin>
+@tikiLink = https://tiki.vn/product-p184036446.html
+@userToken = {{loginUser.response.body.$.token}}
+@adminToken = {{loginAdmin.response.body.$.token}}
 
-###
+############################## AUTH ##############################
+
+### 1. Đăng ký (lần 2 sẽ trả 400 "Email is already in use." – cũng là kết quả đúng)
+POST {{host}}/api/auth/register
+Content-Type: application/json
+
+{ "firstName": "Smoke", "lastName": "Test", "email": "{{userEmail}}", "password": "{{userPassword}}" }
+
+### 2. Đăng nhập User
+# @name loginUser
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "{{userEmail}}", "password": "{{userPassword}}" }
+
+### 3. Đăng nhập Admin
+# @name loginAdmin
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "{{adminEmail}}", "password": "{{adminPassword}}" }
+
+### 4. Thông tin user hiện tại
+GET {{host}}/api/auth/me
+Authorization: Bearer {{userToken}}
+
+############################## PRODUCT ##############################
+
+### 5. Thêm sản phẩm theo dõi (body là chuỗi JSON)
+POST {{host}}/api/product/add
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+"{{tikiLink}}"
+
+### 6. Danh sách sản phẩm đang theo dõi
+# @name allProducts
+GET {{host}}/api/product/all
+Authorization: Bearer {{userToken}}
+
+@productId = {{allProducts.response.body.$[0].productId}}
+
+### 7. Chi tiết sản phẩm
+GET {{host}}/product?id={{productId}}
+Authorization: Bearer {{userToken}}
+
+### 8. Gợi ý sản phẩm rẻ hơn (lazy-load lần đầu)
+GET {{host}}/api/product/suggestion/{{productId}}
+Authorization: Bearer {{userToken}}
+
+### 9. Làm mới gợi ý
+GET {{host}}/api/product/refresh-suggestions?productId={{productId}}
+Authorization: Bearer {{userToken}}
+
+############################## EVENT ##############################
+
+### 10. [Admin] Xem trước sự kiện đang chạy trên Tiki
+# @name preview
+GET {{host}}/api/Event/crawlPreview
+Authorization: Bearer {{adminToken}}
+
+### 11. [Admin] Đăng sự kiện đầu tiên trong danh sách preview
+POST {{host}}/api/Event/postEvent
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "tikiEventId": {{preview.response.body.$[0].tikiEventId}},
+  "title": "{{preview.response.body.$[0].title}}",
+  "imageUrl": "{{preview.response.body.$[0].imageUrl}}",
+  "eventLink": "{{preview.response.body.$[0].eventLink}}"
+}
+
+### 12. [Admin] Tất cả sự kiện (ẩn + hiện)
+# @name adminEvents
+GET {{host}}/api/Event/getAllEventsAdmin
+Authorization: Bearer {{adminToken}}
+
+@eventId = {{adminEvents.response.body.$[0].eventId}}
+
+### 13. Sự kiện đang hiển thị (LƯU Ý: tự xoá sự kiện cũ hơn 14 ngày)
+GET {{host}}/api/Event/getPublishedEvents
+Authorization: Bearer {{userToken}}
+
+### 14. Sản phẩm live của sự kiện (lần đầu có thể mất 10–30 giây vì Playwright)
+# @name liveProducts
+GET {{host}}/api/Event/getLiveEventProducts/{{eventId}}
+Authorization: Bearer {{userToken}}
+
+### 15. Theo dõi một deal trong sự kiện (cần token MỚI sau bước 1 refactor)
+POST {{host}}/api/Event/trackDeal
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{
+  "productLink": "{{liveProducts.response.body.$[0].productLink}}",
+  "productName": "{{liveProducts.response.body.$[0].productName}}",
+  "currentPrice": {{liveProducts.response.body.$[0].latestPrice}},
+  "imageURL": "{{liveProducts.response.body.$[0].imageURL}}"
+}
+
+############################## METRICS ##############################
+
+### 16. [Admin] Telemetry scraper
+GET {{host}}/api/admin/metrics/scraper
+Authorization: Bearer {{adminToken}}
+
+############################## THAY ĐỔI DỮ LIỆU – CHẠY CUỐI ##############################
+
+### 17. [Admin] Bật/tắt hiển thị sự kiện (chạy 2 lần để trả về trạng thái cũ)
+PUT {{host}}/api/Event/togglePublish/{{eventId}}
+Authorization: Bearer {{adminToken}}
+
+### 18. Bỏ theo dõi sản phẩm
+DELETE {{host}}/api/product/delete?id={{productId}}
+Authorization: Bearer {{userToken}}
+
+### (KHÔNG chạy trừ khi muốn xoá thật) [Admin] Xoá sự kiện
+# DELETE {{host}}/api/Event/deleteEvent/{{eventId}}
+# Authorization: Bearer {{adminToken}}

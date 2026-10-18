@@ -1,6 +1,5 @@
 ﻿using ePriTrackerBackend.Models.Entities;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Identity.Client;
 
 namespace ePriTrackerBackend.Models.Context
 {

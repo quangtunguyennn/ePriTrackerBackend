@@ -12,7 +12,7 @@ namespace ePriTrackerBackend.Models.Entities
         public string ProductLink { get; set; }
         [Required]
         public string ImageURL { get; set; }
-        public string? Description { get; set; }
+        public string Description { get; set; }
         [Required]
         public Decimal InitialPrice { get; set; }
         public Decimal? LatestPrice { get; set; }

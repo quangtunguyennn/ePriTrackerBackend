@@ -20,12 +20,12 @@ namespace ePriTrackerBackend.Models.Entities
         [Required]
         public string EventLink { get; set; } = string.Empty;
 
-        public string? Content { get; set; }
+        public string Content { get; set; }
 
         public bool IsPublished { get; set; } = false;
 
         [MaxLength(100)]
-        public string? GroupZone { get; set; }
+        public string GroupZone { get; set; }
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         [NotMapped]
