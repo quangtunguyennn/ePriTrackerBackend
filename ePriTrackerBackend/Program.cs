@@ -1,5 +1,6 @@
+﻿using ePriTrackerBackend.Extensions;
 using ePriTrackerBackend.Models.Context;
-using ePriTrackerBackend.Repositories;
+using ePriTrackerBackend.Scraping;
 using ePriTrackerBackend.Services;
 using Hangfire;
 using Hangfire.SqlServer;
@@ -13,18 +14,14 @@ using System.Text;
 var builder = WebApplication.CreateBuilder(args);
 
 // ==========================================
-// 1. C?U H�NH DATABASE & HTTP CLIENT
+// 1. CẤU HÌNH DATABASE
 // ==========================================
-
-// Config DbContext
 builder.Services.AddDbContext<ePriTrackerContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DBConnection")));
-
-// B?T BU?C: ??ng k� HttpClient Factory cho PriceCrawlerService s? d?ng
-builder.Services.AddHttpClient();
+// (HttpClient của từng sàn được đăng ký trong AddScraping() bên dưới)
 
 // ==========================================
-// 2. C?U H�NH AUTHENTICATION (JWT) & CORS
+// 2. CẤU HÌNH AUTHENTICATION (JWT) & CORS
 // ==========================================
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
 {
@@ -51,20 +48,16 @@ builder.Services.AddCors(options =>
 });
 
 // ==========================================
-// 3. ??NG K� REPOSITORIES & SERVICES (DI)
+// 3. ĐĂNG KÝ REPOSITORIES & SERVICES (DI)
 // ==========================================
-builder.Services.AddSingleton<ITikiBrowserService, TikiBrowserService>();
-builder.Services.AddScoped<IProductRepository, ProductRepository>();
-builder.Services.AddScoped<IPriceCrawlerService, PriceCrawlerService>();
-builder.Services.AddScoped<ISuggestionsCrawlerService, SuggestionCrawlService>();
-builder.Services.AddScoped<IEventRepository, EventRepository>();
-builder.Services.AddScoped<IEventCacheService, EventCacheService>();
-builder.Services.AddSingleton<ScraperMetricsService>();
+builder.Services.AddScraping();             // Telemetry, các sàn TMĐT (Strategy), bộ chọn sàn – Scraping/ScrapingServiceCollectionExtensions.cs
+builder.Services.AddRepositories();         // Truy cập DB – Extensions/ApplicationServiceCollectionExtensions.cs
+builder.Services.AddApplicationServices();  // Nghiệp vụ + điểm vào job Hangfire – cùng file trên
 
 builder.Services.AddControllers();
 
 // ==========================================
-// 4. C?U H�NH HANGFIRE
+// 4. CẤU HÌNH HANGFIRE
 // ==========================================
 builder.Services.AddHangfire(config => config
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
@@ -82,7 +75,7 @@ builder.Services.AddMemoryCache();
 builder.Services.AddHangfireServer();
 
 // ==========================================
-// 5. C?U H�NH SWAGGER
+// 5. CẤU HÌNH SWAGGER
 // ==========================================
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
@@ -132,46 +125,46 @@ app.UseCors("AllowAll");
 app.UseAuthentication();
 app.UseAuthorization();
 
-// B?t Dashboard Hangfire (URL: https://localhost:<port>/hangfire)
+// Bật Dashboard Hangfire (URL: https://localhost:<port>/hangfire)
 app.UseHangfireDashboard();
 
 // ==========================================
-// 7. C?U H�NH TIMEZONE & ??NG K� HANGFIRE JOBS
+// 7. CẤU HÌNH TIMEZONE & ĐĂNG KÝ HANGFIRE JOBS
 // ==========================================
-// Thi?t l?p m�i gi? Vi?t Nam an to�n ?a n?n t?ng kh�ng c?n th? vi?n ngo�i
+// Thiết lập múi giờ Việt Nam an toàn đa nền tảng không cần thư viện ngoài
 TimeZoneInfo vietnamTz;
 try
 {
-    vietnamTz = TimeZoneInfo.FindSystemTimeZoneById("Asia/Ho_Chi_Minh"); // D�nh cho Linux / Docker
+    vietnamTz = TimeZoneInfo.FindSystemTimeZoneById("Asia/Ho_Chi_Minh"); // Dành cho Linux / Docker
 }
 catch (TimeZoneNotFoundException)
 {
-    vietnamTz = TimeZoneInfo.FindSystemTimeZoneById("SE Asia Standard Time"); // D�nh cho Windows / IIS
+    vietnamTz = TimeZoneInfo.FindSystemTimeZoneById("SE Asia Standard Time"); // Dành cho Windows / IIS
 }
 
-// 1. Job t? ??ng crawl gi� m?i 6 ti?ng
+// 1. Job tự động crawl giá mỗi 6 tiếng
 RecurringJob.AddOrUpdate<IPriceCrawlerService>(
     "update-prices-job",
     service => service.UpdateAllTrackedProductPricesAsync(),
-    //"0 */6 * * *",
-    "*/2 * * * *",
+    "0 */6 * * *",
+    //"*/2 * * * *",
     new RecurringJobOptions { TimeZone = vietnamTz }
 );
 
-// 2. Job c?p nh?t g?i � m?i 6 ti?ng
+// 2. Job cập nhật gợi ý mỗi 6 tiếng
 RecurringJob.AddOrUpdate<ISuggestionsCrawlerService>(
     "update-suggestions-job",
     service => service.UpdateAllTrackedProductSuggestionsAsync(CancellationToken.None),
-    //"0 */6 * * *",
-    "*/2 * * * *",
+    "0 */6 * * *",
+    //"*/2 * * * *",
     new RecurringJobOptions { TimeZone = vietnamTz }
 );
 
 RecurringJob.AddOrUpdate<IEventCacheService>(
     "refresh-event-cache-job",
     service => service.RefreshLiveEventProductsCacheAsync(),
-    //"*/30 * * * *",
-    "*/2 * * * *",
+    "*/30 * * * *",
+    //"*/2 * * * *",
     new RecurringJobOptions { TimeZone = vietnamTz }
 );
 BackgroundJob.Enqueue<IEventCacheService>(service => service.RefreshLiveEventProductsCacheAsync());

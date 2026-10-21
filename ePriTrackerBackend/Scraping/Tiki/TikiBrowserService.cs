@@ -1,8 +1,9 @@
-﻿using Microsoft.Extensions.Logging;
+﻿using ePriTrackerBackend.Scraping.Abstractions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Playwright;
 using System.Text.Json;
 
-namespace ePriTrackerBackend.Services
+namespace ePriTrackerBackend.Scraping.Tiki
 {
     public interface ITikiBrowserService
     {
@@ -13,12 +14,16 @@ namespace ePriTrackerBackend.Services
     public class TikiBrowserService : ITikiBrowserService, IAsyncDisposable
     {
         private readonly ILogger<TikiBrowserService> _logger;
-        private readonly ScraperMetricsService _metrics;
-        private IPlaywright? _playwright;
-        private IBrowser? _browser;
-        private IPage? _sharedPage;
+        private readonly IScraperMetrics _metrics;
+        private IPlaywright _playwright;
+        private IBrowser _browser;
+        private IBrowserContext _context;
+
+        // Chỉ được GÁN bên trong _lock. Bên ngoài lock chỉ được ĐỌC vào biến local rồi dùng biến local.
+        private volatile IPage _sharedPage;
         private readonly SemaphoreSlim _lock = new SemaphoreSlim(1, 1);
         private const string TikiBaseUrl = "https://tiki.vn";
+
 
         // Cập nhật Stealth Script sâu hơn
         private const string StealthScript = @"
@@ -34,38 +39,61 @@ namespace ePriTrackerBackend.Services
             );
         ";
 
-        public TikiBrowserService(ILogger<TikiBrowserService> logger, ScraperMetricsService metrics)
+        public TikiBrowserService(ILogger<TikiBrowserService> logger, IScraperMetrics metrics)
         {
             _logger = logger;
             _metrics = metrics ?? throw new ArgumentNullException(nameof(metrics));
         }
 
-        private async Task EnsureBrowserReadyAsync()
+        /// <summary>
+        /// Trả về page dùng chung đã sẵn sàng (đã load Tiki, có cookie).
+        /// Page chỉ được "công bố" ra field _sharedPage SAU KHI khởi tạo xong hoàn toàn,
+        /// nên luồng khác không bao giờ thấy một page dở dang hoặc bị set null giữa chừng.
+        /// </summary>
+        private async Task<IPage> GetReadyPageAsync()
         {
-            if (_sharedPage != null && !_sharedPage.IsClosed) return;
+            var page = _sharedPage;
+            if (page != null && !page.IsClosed) return page;
 
             await _lock.WaitAsync();
             try
             {
-                if (_sharedPage != null && !_sharedPage.IsClosed) return;
+                page = _sharedPage;
+                if (page != null && !page.IsClosed) return page;
 
                 _logger.LogInformation("[TikiBrowserService] Khởi tạo Playwright Singleton...");
                 _playwright ??= await Playwright.CreateAsync();
 
-                _browser ??= await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+                if (_browser == null || !_browser.IsConnected)
                 {
-                    Headless = true,
-                    Args = new[]
+                    if (_browser != null)
                     {
-                        "--disable-blink-features=AutomationControlled",
-                        "--no-sandbox",
-                        "--disable-infobars",
-                        "--disable-dev-shm-usage",
-                        "--disable-extensions",
-                        "--mute-audio",
-                        "--disable-gpu"
+                        try { await _browser.CloseAsync(); } catch { /* browser đã chết */ }
                     }
-                });
+
+                    _browser = await _playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
+                    {
+                        Headless = true,
+                        Args = new[]
+                        {
+                            "--disable-blink-features=AutomationControlled",
+                            "--no-sandbox",
+                            "--disable-infobars",
+                            "--disable-dev-shm-usage",
+                            "--disable-extensions",
+                            "--mute-audio",
+                            "--disable-gpu"
+                        }
+                    });
+                    _context = null;
+                }
+
+                // Đóng context cũ (nếu có) để không rò rỉ RAM mỗi lần khởi tạo lại
+                if (_context != null)
+                {
+                    try { await _context.CloseAsync(); } catch { /* bỏ qua */ }
+                    _context = null;
+                }
 
                 var context = await _browser.NewContextAsync(new BrowserNewContextOptions
                 {
@@ -77,25 +105,49 @@ namespace ePriTrackerBackend.Services
                 });
 
                 await context.AddInitScriptAsync(StealthScript);
-                _sharedPage = await context.NewPageAsync();
 
-                // Chặn toàn bộ mọi thứ không phải là API (Tối đa hoá RAM và Băng thông)
-                await _sharedPage.RouteAsync("**/*", async route =>
+                // Dùng biến LOCAL trong suốt quá trình khởi tạo
+                var newPage = await context.NewPageAsync();
+
+                _logger.LogInformation("[TikiBrowserService] Đang lấy Session Tiki...");
+                await newPage.GotoAsync(TikiBaseUrl, new PageGotoOptions
                 {
-                    var type = route.Request.ResourceType;
-                    if (type == "image" || type == "stylesheet" || type == "font" || type == "media" || type == "websocket")
-                        await route.AbortAsync();
-                    else
-                        await route.ContinueAsync();
+                    WaitUntil = WaitUntilState.DOMContentLoaded,
+                    Timeout = 30000
                 });
 
-                // Load trang chủ 1 lần duy nhất để lấy Cookie xịn
-                _logger.LogInformation("[TikiBrowserService] Đang lấy Session Tiki...");
-                await _sharedPage.GotoAsync(TikiBaseUrl, new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
-                await Task.Delay(1000);
-                await _sharedPage.EvaluateAsync("window.scrollBy(0, document.body.scrollHeight / 3)");
+                await Task.Delay(2000);
+
+                // Chỉ công bố khi đã sẵn sàng hoàn toàn
+                _context = context;
+                _sharedPage = newPage;
 
                 _logger.LogInformation("[TikiBrowserService] Đã sẵn sàng thao tác API ngầm!");
+                return newPage;
+            }
+            finally
+            {
+                _lock.Release();
+            }
+        }
+
+        /// <summary>
+        /// Huỷ page bị hỏng. Chỉ huỷ nếu field vẫn đang trỏ đúng page đó
+        /// (tránh trường hợp luồng khác đã khởi tạo page mới rồi lại bị luồng này xoá mất).
+        /// </summary>
+        private async Task ResetPageAsync(IPage brokenPage)
+        {
+            await _lock.WaitAsync();
+            try
+            {
+                if (!ReferenceEquals(_sharedPage, brokenPage)) return;
+                _sharedPage = null;
+
+                try { await brokenPage.CloseAsync(); }
+                catch (Exception closeEx)
+                {
+                    _logger.LogDebug(closeEx, "[TikiBrowserService] Bỏ qua lỗi khi cố đóng page đã hỏng.");
+                }
             }
             finally
             {
@@ -105,71 +157,62 @@ namespace ePriTrackerBackend.Services
 
         public async Task<JsonElement> FetchTikiApiAsync(string apiPath)
         {
-            await EnsureBrowserReadyAsync();
+            var page = await GetReadyPageAsync();
 
             try
             {
-                // KỸ THUẬT QUAN TRỌNG: Gọi Fetch API ngay trong Context của trang Tiki.
-                // Điều này làm cho Tiki lầm tưởng request đến từ ứng dụng React/NextJS của chính họ.
                 var jsCode = $@"
-                    async () => {{
-                        const response = await fetch('{apiPath}', {{
-                            method: 'GET',
-                            headers: {{
-                                'Accept': 'application/json, text/plain, */*'
-                            }}
-                        }});
-                        if (!response.ok) throw new Error('HTTP ' + response.status);
-                        return await response.json();
+            async () => {{
+                const response = await fetch('{apiPath}', {{
+                    method: 'GET',
+                    headers: {{
+                        'Accept': 'application/json, text/plain, */*'
                     }}
-                ";
+                }});
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                return await response.json();
+            }}
+        ";
 
-                // Playwright tự động convert JSON trả về từ JS sang JsonElement của .NET
-                var jsonResult = await _sharedPage!.EvaluateAsync<JsonElement>(jsCode);
-                return jsonResult;
+                return await page.EvaluateAsync<JsonElement>(jsCode);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "[TikiBrowserService] Lỗi khi fetch {Path}. Thử tải lại session...", apiPath);
+                _logger.LogWarning(ex, "[TikiBrowserService] Lỗi khi fetch {Path}.", apiPath);
 
-                // Nếu bị chặn hoặc crash, xử lý dọn dẹp an toàn
-                if (_sharedPage != null)
+                // Chỉ reset session khi page thật sự hỏng hoặc bị Tiki chặn.
+                // Lỗi 404/400 của MỘT sản phẩm không được phép giết page đang dùng chung cho cả batch.
+                var msg = ex.Message ?? string.Empty;
+                bool sessionBroken = page.IsClosed
+                    || msg.Contains("HTTP 403")
+                    || msg.Contains("HTTP 429")
+                    || msg.Contains("Target closed", StringComparison.OrdinalIgnoreCase)
+                    || msg.Contains("has been closed", StringComparison.OrdinalIgnoreCase);
+
+                if (sessionBroken)
                 {
-                    try
-                    {
-                        // Thử đóng tab, nhưng có thể trình duyệt đã crash hẳn rồi
-                        await _sharedPage.CloseAsync();
-                    }
-                    catch (Exception closeEx)
-                    {
-                        // Chỉ log debug, không ném lỗi ra ngoài để tránh che mất lỗi chính (ex)
-                        _logger.LogDebug(closeEx, "[TikiBrowserService] Bỏ qua lỗi khi cố đóng page đã hỏng.");
-                    }
-                    finally
-                    {
-                        // BẮT BUỘC phải set về null dù CloseAsync có thành công hay không
-                        _sharedPage = null;
-                    }
+                    _logger.LogWarning("[TikiBrowserService] Session hỏng/bị chặn, sẽ khởi tạo lại ở lần gọi sau.");
+                    await ResetPageAsync(page);
                 }
 
-                // Ném lỗi ra ngoài kèm the inner exception để tầng trên (Controller/Service gọi nó) biết
-                throw new Exception("Lấy dữ liệu Tiki thất bại, đang thiết lập lại vòng đời trình duyệt.", ex);
+                throw new Exception("Lấy dữ liệu Tiki thất bại.", ex);
             }
         }
+
 
         // ==============================================================
         // HÀM MỚI: QUÉT DOM BẰNG TRÌNH DUYỆT ẢO (DÀNH RIÊNG CHO SỰ KIỆN)
         // ==============================================================
         public async Task<JsonElement> ScrapeEventPageAsync(string eventUrl)
         {
-            await EnsureBrowserReadyAsync();
-            IPage? eventPage = null;
+            var sharedPage = await GetReadyPageAsync();
+            IPage eventPage = null;
 
             try
             {
-                // Mở tab mới độc lập để không làm hỏng session API của tab chính
-                var context = _browser!.Contexts.First();
-                eventPage = await context.NewPageAsync();
+                // Mở tab mới độc lập (cùng context/cookie) để không làm hỏng session API của tab chính
+                eventPage = await sharedPage.Context.NewPageAsync();
+
 
                 // Chặn tải ảnh/video/css để tối đa tốc độ quét DOM
                 await eventPage.RouteAsync("**/*", async route =>
@@ -323,7 +366,7 @@ namespace ePriTrackerBackend.Services
                 var jsonResult = await eventPage.EvaluateAsync<JsonElement>(jsScraper);
 
                 _logger.LogInformation("[TikiBrowserService] Quét DOM thành công, thu thập được danh sách mục tiêu.");
-                _metrics.RecordPlaywrightSuccess();
+                _metrics.RecordSuccess(FetchStrategyNames.Playwright);
                 return jsonResult;
             }
             catch (Exception ex)
@@ -336,14 +379,19 @@ namespace ePriTrackerBackend.Services
             }
             finally
             {
-                if (eventPage != null) await eventPage.CloseAsync(); // Đóng tab dọn dẹp RAM
+                if (eventPage != null)
+                {
+                    try { await eventPage.CloseAsync(); } catch { /* page đã đóng */ } // Đóng tab dọn dẹp RAM
+                }
             }
         }
 
         public async ValueTask DisposeAsync()
         {
-            if (_browser != null) await _browser.CloseAsync();
+            try { if (_context != null) await _context.CloseAsync(); } catch { }
+            try { if (_browser != null) await _browser.CloseAsync(); } catch { }
             _playwright?.Dispose();
+            _lock.Dispose();
         }
     }
 }

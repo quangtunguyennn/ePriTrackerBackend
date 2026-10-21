@@ -1,54 +1,20 @@
-﻿using ePriTrackerBackend.Models.Context;
-using ePriTrackerBackend.Repositories;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Caching.Memory;
+﻿using ePriTrackerBackend.Services.Events;
 
 namespace ePriTrackerBackend.Services
 {
+    /// <summary>
+    /// Điểm vào của job Hangfire "refresh-event-cache-job". Giữ nguyên tên/namespace vì Hangfire lưu tên kiểu dưới DB;
+    /// toàn bộ nghiệp vụ nằm ở <see cref="IEventService"/>.
+    /// </summary>
     public class EventCacheService : IEventCacheService
     {
-        private readonly ePriTrackerContext _context;
-        private readonly IProductRepository _productRepository;
-        private readonly IMemoryCache _cache;
+        private readonly IEventService _eventService;
 
-        public EventCacheService(ePriTrackerContext context, IProductRepository productRepository, IMemoryCache cache)
+        public EventCacheService(IEventService eventService)
         {
-            _context = context;
-            _productRepository = productRepository;
-            _cache = cache;
+            _eventService = eventService;
         }
 
-        public async Task RefreshLiveEventProductsCacheAsync()
-        {
-            // 1. Chỉ lấy các sự kiện ĐANG HIỂN THỊ (IsPublished = true)
-            var activeEvents = await _context.Event
-                .Where(e => e.IsPublished == true)
-                .ToListAsync();
-
-            foreach (var evt in activeEvents)
-            {
-                try
-                {
-                    // 2. Gọi Crawler để lấy dữ liệu mới nhất từ Tiki
-                    var products = await _productRepository.GetLiveProductsFromEventAsync(evt.EventLink);
-
-                    if (products != null && products.Count > 0)
-                    {
-                        // 3. Cấu hình thời gian sống của Cache (ví dụ: 30 phút)
-                        var cacheOptions = new MemoryCacheEntryOptions()
-                            .SetAbsoluteExpiration(TimeSpan.FromMinutes(30));
-
-                        // 4. Lưu vào RAM với Key là EventId
-                        string cacheKey = $"EventProducts_{evt.EventId}";
-                        _cache.Set(cacheKey, products, cacheOptions);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    // Ghi log lỗi tại đây để theo dõi nếu 1 sự kiện nào đó bị lỗi cào
-                    Console.WriteLine($"Lỗi khi cào sự kiện {evt.EventId}: {ex.Message}");
-                }
-            }
-        }
+        public Task RefreshLiveEventProductsCacheAsync() => _eventService.RefreshAllLiveProductsCacheAsync();
     }
 }

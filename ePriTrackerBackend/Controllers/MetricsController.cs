@@ -1,4 +1,5 @@
-﻿using ePriTrackerBackend.Services;
+﻿using ePriTrackerBackend.Scraping.Abstractions;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
@@ -8,16 +9,17 @@ namespace ePriTrackerBackend.Controllers
     [Route("api/admin/metrics")] // Đường dẫn API
     public class MetricsController : ControllerBase
     {
-        private readonly ScraperMetricsService _metrics;
+        private readonly IScraperMetricsReader _metrics;
 
-        // Tiêm ScraperMetricsService vào Controller
-        public MetricsController(ScraperMetricsService metrics)
+        // Tiêm IScraperMetricsReader vào Controller (chỉ cần quyền đọc số liệu)
+        public MetricsController(IScraperMetricsReader metrics)
         {
             _metrics = metrics;
         }
 
         // Endpoint GET: /api/admin/metrics/scraper
         [HttpGet("scraper")]
+        [Authorize(Roles = "Admin")]
         public IActionResult GetScraperMetrics()
         {
             // Trả về thẳng file JSON số liệu đẹp mắt

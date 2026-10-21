@@ -1,10 +1,7 @@
-﻿using Microsoft.EntityFrameworkCore;
-using System.Globalization;
-using System.Text;
-using System.Text.Json;
-using System.Text.RegularExpressions;
-using ePriTrackerBackend.Models.Context;
-using ePriTrackerBackend.Models.Entities;
+﻿using ePriTrackerBackend.Models.Entities;
+using ePriTrackerBackend.Repositories;
+using ePriTrackerBackend.Scraping.Abstractions;
+using ePriTrackerBackend.Services.Suggestions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -13,52 +10,23 @@ namespace ePriTrackerBackend.Services
     public class SuggestionCrawlService : ISuggestionsCrawlerService
     {
         private readonly IServiceScopeFactory _scopeFactory;
-        private readonly ITikiBrowserService _tikiBrowserService; // Tầng 2: Vũ khí tàng hình Playwright
+        private readonly ISuggestionFinder _finder; // Tìm + lọc gợi ý (dùng chung với lazy-load)
         private readonly ILogger<SuggestionCrawlService> _logger;
 
-        // TẦNG 1: HttpClient dùng chung để tối ưu tốc độ, chống cạn kiệt Socket
-        private static readonly HttpClient _httpClient = new HttpClient();
+        // Timeout ngắn (5 giây) để nếu Tầng 1 bị kẹt/bóp băng thông sẽ chuyển sang Tầng 2 ngay
+        private static readonly FetchOptions SuggestionFetchOptions = new FetchOptions { Timeout = TimeSpan.FromSeconds(5) };
 
         // Cấu hình hằng số
-        private const string TikiBaseUrl = "https://tiki.vn";
-        private const decimal MinPriceRatioThreshold = 0.4m;
         private const int BatchSize = 3; // Xử lý từng lô nhỏ để an toàn cho Memory & DB
         private const int MaxRetries = 3;
 
-        // Regex compiled tối ưu hiệu năng
-        private static readonly Regex SpecialCharRegex = new(@"[^\p{L}\p{N}\s]", RegexOptions.Compiled);
-        private static readonly Regex WhiteSpaceRegex = new(@"\s+", RegexOptions.Compiled);
-
-        private static readonly HashSet<string> AccessoriesBlacklist = new(StringComparer.OrdinalIgnoreCase)
-        {
-            "op lung", "bao da", "kinh cuong luc", "mieng dan", "dan man hinh",
-            "cap sac", "cu sac", "tai nghe", "day deo", "vo boc", "balo", "tui chong soc",
-            "chandock", "fidget", "moc khoa", "de tan nhiệt"
-        };
-
-        private static readonly string[] MarketingWords = {
-            "chính hãng", "chinh hang", "nhập khẩu", "nhap khau",
-            "bản quốc tế", "ban quoc te", "nguyên seal", "nguyen seal",
-            "mới 100%", "moi 100%", "freeship", "tặng kèm", "tang kem",
-            "vn/a", "ll/a", "fullbox", "giá rẻ", "gia re", "hàng cty"
-        };
-
-        // Static Constructor cài đặt mặc định cho HttpClient
-        static SuggestionCrawlService()
-        {
-            // Set Timeout ngắn (5 giây) để nếu Tầng 1 bị kẹt/bóp băng thông sẽ chuyển sang Tầng 2 ngay
-            _httpClient.Timeout = TimeSpan.FromSeconds(5);
-            _httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-            _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
-        }
-
         public SuggestionCrawlService(
             IServiceScopeFactory scopeFactory,
-            ITikiBrowserService tikiBrowserService,
+            ISuggestionFinder finder,
             ILogger<SuggestionCrawlService> logger)
         {
             _scopeFactory = scopeFactory ?? throw new ArgumentNullException(nameof(scopeFactory));
-            _tikiBrowserService = tikiBrowserService ?? throw new ArgumentNullException(nameof(tikiBrowserService));
+            _finder = finder ?? throw new ArgumentNullException(nameof(finder));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
@@ -68,14 +36,11 @@ namespace ePriTrackerBackend.Services
 
             List<Product> productsToUpdate;
 
-            // 1. Lấy danh sách sản phẩm nhanh gọn
+            // 1. Lấy danh sách sản phẩm nhanh gọn (scope ngắn để giải phóng DbContext ngay)
             using (var scope = _scopeFactory.CreateScope())
             {
-                var context = scope.ServiceProvider.GetRequiredService<ePriTrackerContext>();
-                productsToUpdate = await context.Product
-                    .AsNoTracking()
-                    .Where(p => context.Item.Any(i => i.ProductId == p.ProductId))
-                    .ToListAsync(cancellationToken);
+                var products = scope.ServiceProvider.GetRequiredService<IProductRepository>();
+                productsToUpdate = await products.GetAllTrackedAsync(asTracking: false, cancellationToken);
             }
 
             if (!productsToUpdate.Any())
@@ -123,8 +88,7 @@ namespace ePriTrackerBackend.Services
         {
             try
             {
-                decimal basePrice = (product.InitialPrice > 0 ? product.InitialPrice : product.LatestPrice) ?? 0m;
-                var suggestions = await FetchSuggestionsWithRetryAsync(product.ProductId, product.ProductName, basePrice, ct);
+                var suggestions = await FetchSuggestionsWithRetryAsync(product, ct);
 
                 return (product.ProductId, suggestions);
             }
@@ -135,40 +99,10 @@ namespace ePriTrackerBackend.Services
             }
         }
 
-        #region Core Fetch (Dual-Layer) & Retry Logic
+        #region Retry Logic
 
-        /// <summary>
-        /// 🔥 CORE DUAL-LAYER CRAWLING: Thử HttpClient trước -> Thất bại tự chuyển sang Playwright
-        /// </summary>
-        private async Task<JsonElement> FetchTikiApiWithFallbackAsync(string apiPath)
+        private async Task<List<SuggestionProduct>> FetchSuggestionsWithRetryAsync(Product product, CancellationToken ct)
         {
-            string fullUrl = $"{TikiBaseUrl}{apiPath}";
-            try
-            {
-                // TẦNG 1: Thử cào siêu tốc bằng HttpClient
-                var response = await _httpClient.GetAsync(fullUrl);
-                response.EnsureSuccessStatusCode();
-
-                string jsonString = await response.Content.ReadAsStringAsync();
-                using var document = JsonDocument.Parse(jsonString);
-
-                return document.RootElement.Clone();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning("HttpClient thất bại lấy gợi ý ({Msg}). Kích hoạt Playwright tàng hình cho URL: {Url}", ex.Message, fullUrl);
-
-                // TẦNG 2: Fallback sang Playwright Stealth Browser Service
-                return await _tikiBrowserService.FetchTikiApiAsync(apiPath);
-            }
-        }
-
-        private async Task<List<SuggestionProduct>> FetchSuggestionsWithRetryAsync(
-            Guid productId, string productName, decimal basePrice, CancellationToken ct)
-        {
-            string searchKeyword = ExtractSearchKeyword(productName);
-            if (string.IsNullOrWhiteSpace(searchKeyword)) return new List<SuggestionProduct>();
-
             for (int attempt = 1; attempt <= MaxRetries; attempt++)
             {
                 try
@@ -176,64 +110,17 @@ namespace ePriTrackerBackend.Services
                     // Delay nhẹ luồng hiện tại để phân tán request trong lô
                     await Task.Delay(Random.Shared.Next(500, 1500), ct);
 
-                    return await FetchSuggestionsCoreAsync(productId, productName, searchKeyword, basePrice, ct);
+                    return await _finder.FindAsync(product, SuggestionFetchOptions, ct);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning($"⚠️ Lỗi khi lấy gợi ý lần {attempt}/{MaxRetries} cho SP: {productName}. Chi tiết: {ex.Message}");
+                    _logger.LogWarning($"⚠️ Lỗi khi lấy gợi ý lần {attempt}/{MaxRetries} cho SP: {product.ProductName}. Chi tiết: {ex.Message}");
                     if (attempt == MaxRetries) return new List<SuggestionProduct>();
                     await Task.Delay(2000 * attempt, ct); // Exponential backoff
                 }
             }
 
             return new List<SuggestionProduct>();
-        }
-
-        private async Task<List<SuggestionProduct>> FetchSuggestionsCoreAsync(
-            Guid productId, string originalName, string searchKeyword, decimal basePrice, CancellationToken ct)
-        {
-            string apiPath = $"/api/v2/products?limit=10&q={Uri.EscapeDataString(searchKeyword)}";
-
-            // 🔥 Gọi qua cơ chế Dual-Layer Crawling
-            JsonElement root = await FetchTikiApiWithFallbackAsync(apiPath);
-
-            if (!root.TryGetProperty("data", out JsonElement dataElement) || dataElement.ValueKind != JsonValueKind.Array)
-            {
-                return new List<SuggestionProduct>();
-            }
-
-            var suggestionEntities = new List<SuggestionProduct>();
-
-            foreach (var item in dataElement.EnumerateArray())
-            {
-                if (!item.TryGetProperty("id", out _)) continue;
-
-                string currentName = item.TryGetProperty("name", out var nameProp) ? nameProp.GetString() ?? "" : "";
-                decimal suggestionPrice = item.TryGetProperty("price", out var priceProp) && priceProp.ValueKind == JsonValueKind.Number ? priceProp.GetDecimal() : 0;
-
-                if (!IsValidSimilarProduct(originalName, currentName)) continue;
-
-                bool isPriceValid = basePrice <= 0 || (suggestionPrice > 0 && suggestionPrice <= basePrice && suggestionPrice >= (basePrice * MinPriceRatioThreshold));
-
-                if (isPriceValid)
-                {
-                    string imageUrl = item.TryGetProperty("thumbnail_url", out var imgProp) ? imgProp.GetString() ?? "" : "";
-                    string rawUrlPath = item.TryGetProperty("url_path", out var urlProp) ? urlProp.GetString() ?? "" : "";
-
-                    suggestionEntities.Add(new SuggestionProduct
-                    {
-                        SuggestionProductId = Guid.NewGuid(),
-                        ProductId = productId,
-                        ProductName = currentName,
-                        Price = suggestionPrice,
-                        ImageURL = imageUrl,
-                        ProductLink = BuildFullTikiUrl(rawUrlPath),
-                        LastUpdatedAt = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7))
-                    });
-                }
-            }
-
-            return suggestionEntities;
         }
 
         #endregion
@@ -246,117 +133,22 @@ namespace ePriTrackerBackend.Services
         {
             using (var scope = _scopeFactory.CreateScope())
             {
-                var context = scope.ServiceProvider.GetRequiredService<ePriTrackerContext>();
-
-                // Transaction cục bộ cho lô này (Giải phóng Lock nhanh)
-                using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
+                var suggestions = scope.ServiceProvider.GetRequiredService<ISuggestionRepository>();
 
                 try
                 {
-                    var productIdsInBatch = batchData.Select(b => b.ProductId).ToList();
-
-                    // Xóa hàng loạt trực tiếp dưới DB bằng EF Core 7+ ExecuteDeleteAsync
-                    await context.Set<SuggestionProduct>()
-                        .Where(s => productIdsInBatch.Contains(s.ProductId))
-                        .ExecuteDeleteAsync(cancellationToken);
-
-                    var newSuggestions = batchData.SelectMany(b => b.Suggestions).ToList();
-
-                    if (newSuggestions.Any())
-                    {
-                        await context.Set<SuggestionProduct>().AddRangeAsync(newSuggestions, cancellationToken);
-                        await context.SaveChangesAsync(cancellationToken);
-                    }
-
-                    await transaction.CommitAsync(cancellationToken);
+                    // Xoá gợi ý cũ + ghi gợi ý mới của cả lô trong một transaction
+                    await suggestions.ReplaceForProductsAsync(
+                        batchData.Select(b => b.ProductId).ToList(),
+                        batchData.SelectMany(b => b.Suggestions).ToList(),
+                        cancellationToken);
                 }
                 catch (Exception ex)
                 {
-                    await transaction.RollbackAsync(cancellationToken);
                     _logger.LogError(ex, "🛑 Lỗi khi Save Batch Database. Đã Rollback lô hiện tại.");
                     throw;
                 }
             }
-        }
-
-        #endregion
-
-        #region Helper Methods (Xử lý Chuỗi & Edge Cases)
-
-        private static string ExtractSearchKeyword(string rawName)
-        {
-            if (string.IsNullOrWhiteSpace(rawName)) return string.Empty;
-
-            var splitChars = new char[] { '-', '|', '(', ')', '[', ']', ',', '/', ':' };
-            var parts = rawName.Split(splitChars, StringSplitOptions.RemoveEmptyEntries);
-
-            string coreName = (parts.Length > 0 && parts[0].Trim().Length >= 5) ? parts[0] : rawName;
-            coreName = coreName.ToLowerInvariant();
-
-            foreach (var word in MarketingWords)
-            {
-                coreName = Regex.Replace(coreName, $@"\b{Regex.Escape(word)}\b", "", RegexOptions.IgnoreCase);
-            }
-
-            coreName = SpecialCharRegex.Replace(coreName, " ");
-            coreName = WhiteSpaceRegex.Replace(coreName, " ").Trim();
-
-            var words = coreName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            return string.Join(" ", words.Take(5));
-        }
-
-        private static bool IsValidSimilarProduct(string originalName, string searchName)
-        {
-            if (string.IsNullOrWhiteSpace(originalName) || string.IsNullOrWhiteSpace(searchName)) return false;
-
-            var lowerOriginalNoMark = RemoveVietnameseDiacritics(originalName.ToLowerInvariant());
-            var lowerSearchNoMark = RemoveVietnameseDiacritics(searchName.ToLowerInvariant());
-
-            bool originalIsAccessory = AccessoriesBlacklist.Any(x => lowerOriginalNoMark.Contains(x));
-            bool searchIsAccessory = AccessoriesBlacklist.Any(x => lowerSearchNoMark.Contains(x));
-
-            if (!originalIsAccessory && searchIsAccessory) return false;
-
-            var originalWords = lowerOriginalNoMark.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (originalWords.Length > 0)
-            {
-                string keyWord = originalWords[0];
-                if (keyWord.Length > 2 && !lowerSearchNoMark.Contains(keyWord))
-                {
-                    return false;
-                }
-            }
-
-            return true;
-        }
-
-        private static string BuildFullTikiUrl(string rawUrlPath)
-        {
-            if (string.IsNullOrWhiteSpace(rawUrlPath)) return string.Empty;
-            if (rawUrlPath.StartsWith("http://") || rawUrlPath.StartsWith("https://")) return rawUrlPath;
-            return $"{TikiBaseUrl}/{rawUrlPath.TrimStart('/')}";
-        }
-
-        private static string RemoveVietnameseDiacritics(string text)
-        {
-            if (string.IsNullOrWhiteSpace(text)) return text;
-            var normalizedString = text.Normalize(NormalizationForm.FormD);
-            var stringBuilder = new StringBuilder(capacity: normalizedString.Length);
-
-            for (int i = 0; i < normalizedString.Length; i++)
-            {
-                char c = normalizedString[i];
-                if (CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark)
-                {
-                    stringBuilder.Append(c);
-                }
-            }
-
-            return stringBuilder
-                .ToString()
-                .Normalize(NormalizationForm.FormC)
-                .Replace('đ', 'd')
-                .Replace('Đ', 'D');
         }
 
         #endregion

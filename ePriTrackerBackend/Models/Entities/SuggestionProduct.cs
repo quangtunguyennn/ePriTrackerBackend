@@ -11,7 +11,7 @@ namespace ePriTrackerBackend.Models.Entities
         [Required]
         public Guid ProductId { get; set; }
         [JsonIgnore]
-        public Product? Product { get; set; }
+        public Product Product { get; set; }
         [Required]
         public string ProductName { get; set; }
         [Required]

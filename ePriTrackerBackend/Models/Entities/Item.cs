@@ -10,10 +10,10 @@ namespace ePriTrackerBackend.Models.Entities
         [Required]
         public Guid UserId { get; set; }
         [JsonIgnore]
-        public User? User { get; set; }
+        public User User { get; set; }
         [Required]
         public Guid ProductId { get; set; }
         [JsonIgnore]
-        public Product? Product { get; set; }
+        public Product Product { get; set; }
     }
 }
