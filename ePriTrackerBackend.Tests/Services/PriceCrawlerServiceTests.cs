@@ -158,6 +158,97 @@ namespace ePriTrackerBackend.Tests.Services
             Assert.Equal("<p>Mô tả cũ</p>", Reload(product).Description);
         }
 
+        /// <summary>Sàn giả có lấy giá theo lô; sản phẩm lẻ vẫn qua <see cref="FakePlatformScraper"/>.</summary>
+        private sealed class FakeBatchScraper : IBatchPriceScraper
+        {
+            private readonly FakePlatformScraper _inner;
+            public FakeBatchScraper(FakePlatformScraper inner) => _inner = inner;
+
+            public Dictionary<string, BatchPriceResult> Prices { get; } = new();
+            public Exception? Failure { get; set; }
+            public List<BatchPriceRequest> Requests { get; } = new();
+
+            public string Platform => _inner.Platform;
+            public bool CanHandle(string productUrl) => _inner.CanHandle(productUrl);
+            public bool TryNormalizeProductUrl(string productUrl, out string normalizedUrl) => _inner.TryNormalizeProductUrl(productUrl, out normalizedUrl);
+            public Task<ScrapedProduct> GetProductAsync(string productUrl, CancellationToken cancellationToken = default) => _inner.GetProductAsync(productUrl, cancellationToken);
+
+            public Task<IReadOnlyDictionary<string, BatchPriceResult>> GetCurrentPricesAsync(IReadOnlyList<BatchPriceRequest> items, CancellationToken cancellationToken = default)
+            {
+                Requests.AddRange(items);
+                if (Failure != null) throw Failure;
+                return Task.FromResult<IReadOnlyDictionary<string, BatchPriceResult>>(
+                    items.Where(i => Prices.ContainsKey(i.ProductUrl)).ToDictionary(i => i.ProductUrl, i => Prices[i.ProductUrl]));
+            }
+        }
+
+        private PriceCrawlerService Job(IPlatformScraper scraper)
+        {
+            var ctx = _db.Context;
+            return new PriceCrawlerService(new ProductRepository(ctx), new PriceHistoryRepository(ctx), new EfUnitOfWork(ctx),
+                new SingleScraperResolver(scraper), NullLogger<PriceCrawlerService>.Instance);
+        }
+
+        [Fact]
+        public async Task BatchPrices_UsedFirst_MissingOnesFetchedSingly_PlatformIdSaved()
+        {
+            var inBatch = Tracked("1", 1000);
+            var notInBatch = Tracked("2", 500);
+            var batch = new FakeBatchScraper(_scraper);
+            batch.Prices[FakePlatformScraper.Normalized("1")] = new BatchPriceResult { Product = new ScrapedProduct { Price = 900 }, PlatformProductId = "131954" };
+            _scraper.Products[FakePlatformScraper.Normalized("2")] = new ScrapedProduct { Price = 450 };
+
+            await Job(batch).UpdateAllTrackedProductPricesAsync();
+
+            var first = Reload(inBatch);
+            Assert.Equal(900m, first.LatestPrice);
+            Assert.Equal("131954", first.PlatformProductId); // lần sau khỏi tra mã
+            Assert.Equal(450m, Reload(notInBatch).LatestPrice);
+            Assert.Equal(new[] { FakePlatformScraper.Normalized("2") }, _scraper.RequestedUrls); // chỉ sản phẩm thiếu mới cào lẻ
+            Assert.Equal(2, _db.Fresh().PriceHistory.Count());
+        }
+
+        [Fact]
+        public async Task BatchPrices_SendsStoredPlatformId()
+        {
+            var product = Tracked("1", 1000);
+            product.PlatformProductId = "42";
+            _db.Context.SaveChanges();
+            var batch = new FakeBatchScraper(_scraper);
+            batch.Prices[FakePlatformScraper.Normalized("1")] = new BatchPriceResult { Product = new ScrapedProduct { Price = 1000 }, PlatformProductId = "42" };
+
+            await Job(batch).UpdateAllTrackedProductPricesAsync();
+
+            Assert.Equal("42", Assert.Single(batch.Requests).PlatformProductId);
+        }
+
+        [Fact]
+        public async Task BatchFails_FallsBackToSingleFetch()
+        {
+            var product = Tracked("1", 1000);
+            var batch = new FakeBatchScraper(_scraper) { Failure = new HttpRequestException("API đổi") };
+            _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { Price = 800 };
+
+            await Job(batch).UpdateAllTrackedProductPricesAsync();
+
+            Assert.Equal(800m, Reload(product).LatestPrice);
+            Assert.Null(Reload(product).PlatformProductId);
+        }
+
+        [Fact]
+        public async Task BatchResultWithoutDescription_KeepsStoredDescription()
+        {
+            var product = Tracked("1", 1000);
+            product.Description = "<p>Mô tả đầy đủ</p>";
+            _db.Context.SaveChanges();
+            var batch = new FakeBatchScraper(_scraper);
+            batch.Prices[FakePlatformScraper.Normalized("1")] = new BatchPriceResult { Product = new ScrapedProduct { Price = 990 }, PlatformProductId = "1" };
+
+            await Job(batch).UpdateAllTrackedProductPricesAsync();
+
+            Assert.Equal("<p>Mô tả đầy đủ</p>", Reload(product).Description);
+        }
+
         [Fact]
         public async Task ProductAddedWithoutPrice_FirstRealPriceBecomesInitialPrice()
         {

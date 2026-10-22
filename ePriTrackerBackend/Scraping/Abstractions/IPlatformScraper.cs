@@ -33,6 +33,18 @@ namespace ePriTrackerBackend.Scraping.Abstractions
     }
 
     /// <summary>
+    /// Sàn lấy được giá NHIỀU sản phẩm trong ít request (job giá). Tách riêng (ISP): sàn không có thì job cào lẻ từng sản phẩm.
+    /// </summary>
+    public interface IBatchPriceScraper : IPlatformScraper
+    {
+        /// <summary>
+        /// Giá hiện tại theo link (đã chuẩn hoá). Sản phẩm nào thiếu trong kết quả → nơi gọi tự cào lẻ bằng <see cref="IPlatformScraper.GetProductAsync"/>.
+        /// Không ném lỗi vì từng sản phẩm; lỗi toàn bộ (mạng / API đổi) thì ném để nơi gọi chuyển sang cào lẻ.
+        /// </summary>
+        Task<IReadOnlyDictionary<string, BatchPriceResult>> GetCurrentPricesAsync(IReadOnlyList<BatchPriceRequest> items, CancellationToken cancellationToken = default);
+    }
+
+    /// <summary>
     /// Sàn có trang sự kiện khuyến mãi. Tách riêng khỏi <see cref="IPlatformScraper"/> (ISP):
     /// không phải sàn nào cũng cần/được hỗ trợ tính năng sự kiện.
     /// </summary>

@@ -127,6 +127,23 @@ namespace ePriTrackerBackend.Tests.Services
         }
 
         [Fact]
+        public async Task RollingEventMissingFromOneRead_KeptUntilItExpires()
+        {
+            // Nguồn đọc deal thưa hơn (trang chủ 2 giờ/lần) – thiếu một lượt chưa chắc đã kết thúc
+            _source.Events = new() { Deal() };
+            await Service().SyncPlatformAsync("CellphoneS");
+
+            _time.UtcNow = Now.AddMinutes(15);
+            _source.Events = new() { Flash() };
+            await Service().SyncPlatformAsync("CellphoneS");
+            Assert.Contains(_db.Fresh().Event, e => e.Title == "DEAL SỐC MỖI NGÀY");
+
+            _time.UtcNow = Now + AutoEventSyncService.RollingLifetime;
+            await Service().SyncPlatformAsync("CellphoneS");
+            Assert.DoesNotContain(_db.Fresh().Event, e => e.Title == "DEAL SỐC MỖI NGÀY");
+        }
+
+        [Fact]
         public async Task SourceFails_KeepsEverything()
         {
             _source.Events = new() { Flash(), Deal() };

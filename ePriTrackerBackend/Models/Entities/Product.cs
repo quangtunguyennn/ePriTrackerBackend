@@ -26,5 +26,11 @@ namespace ePriTrackerBackend.Models.Entities
 
         /// <summary>Thời điểm phát hiện hết hàng; null khi đang còn hàng.</summary>
         public DateTimeOffset? OutOfStockSince { get; set; }
+
+        /// <summary>
+        /// Mã sản phẩm trên sàn dùng cho lấy giá theo lô (vd CellphoneS product_id). Job giá tự tra và lưu lần đầu; null với sàn không cần.
+        /// </summary>
+        [System.ComponentModel.DataAnnotations.MaxLength(50)]
+        public string PlatformProductId { get; set; }
     }
 }
