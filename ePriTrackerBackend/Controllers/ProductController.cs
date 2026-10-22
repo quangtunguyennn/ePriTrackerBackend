@@ -1,6 +1,7 @@
 ﻿using ePriTrackerBackend.Models.Entities;
 using ePriTrackerBackend.Services.Products;
 using ePriTrackerBackend.Services.Suggestions;
+using ePriTrackerBackend.Services.YouTube;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -12,11 +13,15 @@ namespace ePriTrackerBackend.Controllers
     {
         private readonly IProductTrackingService _tracking;
         private readonly ISuggestionService _suggestions;
-
-        public ProductController(IProductTrackingService tracking, ISuggestionService suggestions)
+        private readonly IYouTubeService _youTubeService; 
+        public ProductController(
+            IProductTrackingService tracking,
+            ISuggestionService suggestions,
+            IYouTubeService youTubeService)
         {
             _tracking = tracking;
             _suggestions = suggestions;
+            _youTubeService = youTubeService;
         }
 
         // Endpoint: POST /api/product/add
@@ -121,6 +126,33 @@ namespace ePriTrackerBackend.Controllers
 
             var suggestions = await _suggestions.RefreshSuggestionsAsync(productId);
             return Ok(suggestions);
+        }
+
+        // Endpoint: GET /api/product/{productId}/reviews
+        [Authorize(Roles = "User, Admin")]
+        [HttpGet("/api/product/{productId}/reviews")]
+      
+        public async Task<IActionResult> GetProductReviews(Guid productId)
+        {
+            var userEmail = User?.Identity?.Name;
+            if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
+
+            if (!await CanAccessAsync(productId, userEmail)) return ProductNotFound();
+
+            try
+            {
+                var product = await _tracking.GetProductAsync(productId);
+                if (product == null) return ProductNotFound();
+
+                // Lấy đúng 3 video review
+                var videos = await _youTubeService.GetReviewVideosAsync(product.ProductName, 3);
+
+                return Ok(videos);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
         }
 
         // Trả 404 (không phải 403) để không lộ việc sản phẩm có tồn tại hay không

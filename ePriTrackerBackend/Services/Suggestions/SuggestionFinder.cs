@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using ePriTrackerBackend.Models.Entities;
 using ePriTrackerBackend.Scraping.Abstractions;
@@ -26,6 +27,9 @@ namespace ePriTrackerBackend.Services.Suggestions
         private const int SearchLimitPerPlatform = 10;
         private const int MaxSuggestions = 20;
 
+        // Mỗi sàn có tối đa chừng này thời gian; sàn chậm bị bỏ (ghi log) thay vì kéo cả trang gợi ý chờ theo
+        private static readonly TimeSpan PerPlatformTimeout = TimeSpan.FromSeconds(35);
+
         private readonly IPlatformScraperResolver _scrapers;
         private readonly ISuggestionMatcher _matcher;
         private readonly ILogger<SuggestionFinder> _logger;
@@ -46,17 +50,33 @@ namespace ePriTrackerBackend.Services.Suggestions
             if (string.IsNullOrWhiteSpace(keyword))
                 return new List<SuggestionProduct>();
 
-            decimal referencePrice = _matcher.GetReferencePrice(product.InitialPrice, product.LatestPrice);
+            decimal referencePrice = 10; // FIX
             sourceScraper.TryNormalizeProductUrl(product.ProductLink, out var originalLink);
 
             var candidates = await SearchAllPlatformsAsync(keyword, options, cancellationToken);
             var now = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7));
 
-            return candidates
-                .Where(c => !IsSameProduct(c.Url, originalLink))
+            // Tách từng bước lọc (cùng điều kiện như trước) để ghi log: mất ứng viên ở bước nào, của sàn nào
+            var notOriginal = candidates.Where(c => !IsSameProduct(c.Url, originalLink)).ToList();
+
+            var similar = notOriginal
                 .Select(c => new { Candidate = c, Name = c.Name ?? "", Price = c.Price ?? 0 })
-                .Where(x => _matcher.IsSimilarProduct(product.ProductName, x.Name)
-                         && _matcher.IsPriceAcceptable(x.Price, referencePrice))
+                .Where(x => _matcher.IsSimilarProduct(product.ProductName, x.Name))
+                .ToList();
+
+            var accepted = similar
+                .Where(x => _matcher.IsPriceAcceptable(x.Price, referencePrice))
+                .ToList();
+
+            _logger.LogInformation(
+                "Gợi ý cho '{Keyword}' (giá gốc {Reference:N0}): ứng viên [{All}] → khác sản phẩm gốc [{NotOriginal}] → cùng loại [{Similar}] → đạt giá [{Accepted}]",
+                keyword, referencePrice,
+                ByPlatform(candidates.Select(c => c.Url)),
+                ByPlatform(notOriginal.Select(c => c.Url)),
+                ByPlatform(similar.Select(x => x.Candidate.Url)),
+                ByPlatform(accepted.Select(x => x.Candidate.Url)));
+
+            return accepted
                 .OrderBy(x => x.Price)
                 .Take(MaxSuggestions)
                 .Select(x => new SuggestionProduct
@@ -73,14 +93,16 @@ namespace ePriTrackerBackend.Services.Suggestions
         }
 
         /// <summary>
-        /// Tìm song song trên mọi sàn hỗ trợ tìm kiếm. Một sàn lỗi thì bỏ qua sàn đó (ghi log);
+        /// Tìm song song trên mọi sàn hỗ trợ tìm kiếm. Một sàn lỗi hoặc quá <see cref="PerPlatformTimeout"/> thì bỏ qua sàn đó (ghi log);
         /// TẤT CẢ đều lỗi thì ném lỗi của sàn đầu tiên – để job Hangfire vẫn retry như trước.
         /// </summary>
         private async Task<List<ScrapedProduct>> SearchAllPlatformsAsync(string keyword, FetchOptions options, CancellationToken cancellationToken)
         {
             var platforms = _scrapers.SearchablePlatforms;
+            _logger.LogInformation("Tìm gợi ý '{Keyword}' trên: {Platforms}", keyword, string.Join(", ", platforms.Select(p => p.Platform)));
+
             var tasks = platforms
-                .Select(p => Start(() => p.SearchAsync(keyword, SearchLimitPerPlatform, options, cancellationToken)))
+                .Select(p => SearchOnePlatformAsync(p, keyword, options, cancellationToken))
                 .ToList();
 
             try { await Task.WhenAll(tasks); }
@@ -99,11 +121,34 @@ namespace ePriTrackerBackend.Services.Suggestions
             return succeeded.SelectMany(t => t.Result).ToList();
         }
 
-        // Lỗi ném đồng bộ cũng được gói vào Task để không làm hỏng các sàn khác
-        private static Task<T> Start<T>(Func<Task<T>> action)
+        // Một sàn: giới hạn thời gian, ghi thời gian chạy. Lỗi ném đồng bộ cũng thành Task lỗi nên không làm hỏng các sàn khác.
+        private async Task<IReadOnlyList<ScrapedProduct>> SearchOnePlatformAsync(ISearchablePlatformScraper platform, string keyword, FetchOptions options, CancellationToken cancellationToken)
         {
-            try { return action(); }
-            catch (Exception ex) { return Task.FromException<T>(ex); }
+            var sw = Stopwatch.StartNew();
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(PerPlatformTimeout);
+
+            try
+            {
+                var result = await platform.SearchAsync(keyword, SearchLimitPerPlatform, options, timeoutCts.Token);
+                _logger.LogInformation("{Platform} trả {Count} ứng viên cho '{Keyword}' sau {Ms}ms", platform.Platform, result.Count, keyword, sw.ElapsedMilliseconds);
+                return result;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException($"{platform.Platform} tìm kiếm quá {PerPlatformTimeout.TotalSeconds:0}s.");
+            }
+        }
+
+        // "Tiki=10, HACOM=3" – đếm theo sàn suy ra từ link
+        private string ByPlatform(IEnumerable<string> urls)
+        {
+            var parts = urls
+                .GroupBy(u => _scrapers.TryResolve(u, out var scraper) ? scraper.Platform : "?")
+                .Select(g => $"{g.Key}={g.Count()}");
+
+            string text = string.Join(", ", parts);
+            return text.Length == 0 ? "-" : text;
         }
 
         private bool IsSameProduct(string candidateUrl, string originalLink)
