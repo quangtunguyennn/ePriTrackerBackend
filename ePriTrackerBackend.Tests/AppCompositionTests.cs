@@ -67,8 +67,10 @@ namespace ePriTrackerBackend.Tests
             Assert.True(resolver.TryResolve("https://cellphones.com.vn/iphone-17-256gb.html", out var cps));
             Assert.IsType<CellphoneSScraper>(cps);
 
-            // Chỉ Tiki là nguồn gợi ý (CellphoneS cấm trang tìm kiếm)
-            Assert.Equal(new[] { TikiScraper.PlatformName }, resolver.SearchablePlatforms.Select(p => p.Platform));
+            // Gợi ý tìm trên cả Tiki (API công khai) và CellphoneS (GraphQL nội bộ); CellphoneS có thêm giá theo lô
+            Assert.Equal(new[] { TikiScraper.PlatformName, CellphoneSScraper.PlatformName }, resolver.SearchablePlatforms.Select(p => p.Platform));
+            Assert.IsAssignableFrom<IBatchPriceScraper>(cps);
+            Assert.IsType<CellphoneSApi>(sp.GetRequiredService<ICellphoneSApi>());
         }
 
         [Fact]

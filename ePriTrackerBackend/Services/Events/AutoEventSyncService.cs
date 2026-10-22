@@ -148,8 +148,11 @@ namespace ePriTrackerBackend.Services.Events
                 published++;
             }
 
-            // Biến mất khỏi sàn (trong lượt đọc THÀNH CÔNG) hoặc đã hết giờ → xoá hẳn
-            var removed = stored.Where(e => !seenLinks.Contains(e.EventLink) || (e.EndsAt != null && e.EndsAt <= now)).ToList();
+            // Xoá hẳn: đã hết giờ, hoặc sự kiện có giờ chính xác (flash sale) mà sàn không còn trả về.
+            // Sự kiện hạn cuốn chiếu không thấy trong lượt này thì để tự hết hạn: nguồn của chúng có thể đọc thưa hơn
+            // (vd deal CellphoneS đọc từ trang chủ 2 giờ/lần) – thiếu một lượt không có nghĩa là đã kết thúc.
+            var removed = stored.Where(e => (e.EndsAt != null && e.EndsAt <= now)
+                                         || (e.EndsAtIsExact && !seenLinks.Contains(e.EventLink))).ToList();
             if (removed.Count > 0) _events.RemoveRange(removed);
 
             await _unitOfWork.SaveChangesAsync();

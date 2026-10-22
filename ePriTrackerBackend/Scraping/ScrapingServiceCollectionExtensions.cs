@@ -80,6 +80,18 @@ namespace ePriTrackerBackend.Scraping
                 sp.GetRequiredService<IScraperMetrics>(),
                 sp.GetRequiredService<ILogger<HybridFetcher>>()));
 
+            // GraphQL nội bộ (tìm kiếm, flash sale, giá theo lô) – CHUNG giới hạn tốc độ với trang web CellphoneS
+            services.AddPlatformHttpClient(CellphoneSScraper.PlatformName, CellphoneSApi.HttpClientName, client =>
+            {
+                client.BaseAddress = new Uri(CellphoneSApi.BaseAddress);
+                client.Timeout = TimeSpan.FromSeconds(20);
+                client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+                client.DefaultRequestHeaders.Add("Accept", "application/json");
+                client.DefaultRequestHeaders.Add("Origin", "https://cellphones.com.vn");
+                client.DefaultRequestHeaders.Add("Referer", "https://cellphones.com.vn/");
+            });
+            services.AddSingleton<ICellphoneSApi, CellphoneSApi>();
+
             services.AddSingleton<CellphoneSScraper>();
             services.AddSingleton<IPlatformScraper>(sp => sp.GetRequiredService<CellphoneSScraper>());
 
@@ -92,11 +104,12 @@ namespace ePriTrackerBackend.Scraping
 
         /// <summary>
         /// Named HttpClient của một sàn + giới hạn tốc độ đọc từ "Scraping:Platforms:{platform}:MinIntervalMs"
-        /// (thiếu cấu hình → 0 = không giới hạn). Bộ đếm thời gian là singleton theo sàn nên dùng chung giữa mọi request.
+        /// (thiếu cấu hình → 0 = không giới hạn). Bộ đếm thời gian là singleton theo SÀN nên mọi HttpClient của cùng sàn
+        /// (vd trang web + API) dùng chung một nhịp.
         /// </summary>
         private static IHttpClientBuilder AddPlatformHttpClient(this IServiceCollection services, string platform, string httpClientName, Action<HttpClient> configure)
         {
-            services.AddKeyedSingleton(platform, (sp, _) =>
+            services.TryAddKeyedSingleton(platform, (sp, _) =>
             {
                 int ms = sp.GetService<IConfiguration>()?.GetValue<int?>($"Scraping:Platforms:{platform}:MinIntervalMs") ?? 0;
                 return new MinIntervalGate(TimeSpan.FromMilliseconds(Math.Max(0, ms)));

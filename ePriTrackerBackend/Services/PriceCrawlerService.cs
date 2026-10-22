@@ -42,24 +42,46 @@ namespace ePriTrackerBackend.Services
             }
 
             int priceChanges = 0, outOfStockCount = 0;
+
+            // Sàn hỗ trợ lấy giá theo lô (vd CellphoneS qua API): vài request cho cả trăm sản phẩm.
+            // Sản phẩm không có trong kết quả lô → cào lẻ như cũ (JSON-LD / API Tiki) bên dưới.
+            var batchResults = await FetchBatchPricesAsync(productsToUpdate);
+
             int batchSize = 5; // Xử lý 5 sản phẩm cùng lúc
             var productChunks = productsToUpdate.Chunk(batchSize);
 
             foreach (var chunk in productChunks)
             {
                 // Lấy dữ liệu song song cho từng Batch (giới hạn tốc độ theo sàn nằm ở tầng HttpClient)
-                var results = await Task.WhenAll(chunk.Select(async product => (Product: product, Scraped: await FetchCurrentAsync(product.ProductLink))));
+                var toFetch = chunk.Where(p => !batchResults.ContainsKey(p.ProductId)).ToList();
+                var fetched = (await Task.WhenAll(toFetch.Select(async product => (product.ProductId, Scraped: await FetchCurrentAsync(product.ProductLink)))))
+                    .ToDictionary(x => x.ProductId, x => x.Scraped);
 
                 bool anyChange = false;
                 var now = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7));
 
-                foreach (var (product, scraped) in results)
+                foreach (var product in chunk)
                 {
+                    ScrapedProduct scraped;
+                    if (batchResults.TryGetValue(product.ProductId, out var batch))
+                    {
+                        scraped = batch.Product;
+                        if (!string.IsNullOrEmpty(batch.PlatformProductId) && batch.PlatformProductId != product.PlatformProductId)
+                        {
+                            product.PlatformProductId = batch.PlatformProductId; // lần sau khỏi tra mã
+                            anyChange = true;
+                        }
+                    }
+                    else
+                    {
+                        scraped = fetched.GetValueOrDefault(product.ProductId);
+                    }
+
                     // Lỗi mạng / bị chặn / link không hỗ trợ → giữ nguyên mọi thứ, không kết luận là hết hàng
                     if (scraped == null) continue;
 
                     var outcome = ApplyScrapeResult(product, scraped, now);
-                    bool descriptionChanged = ApplyDescription(product, scraped);
+                    bool descriptionChanged = ApplyDescription(product, scraped); // kết quả lô không có mô tả → giữ bản cũ
                     anyChange |= outcome != ScrapeOutcome.Unchanged || descriptionChanged;
                     if (outcome == ScrapeOutcome.PriceChanged) priceChanges++;
                     if (!product.IsInStock) outOfStockCount++;
@@ -71,12 +93,62 @@ namespace ePriTrackerBackend.Services
                     await _unitOfWork.SaveChangesAsync();
                 }
 
-                // Delay ngẫu nhiên giữa các Lô để tránh kích hoạt WAF
-                await Task.Delay(Random.Shared.Next(1500, 3000));
+                // Delay ngẫu nhiên giữa các Lô để tránh kích hoạt WAF – chỉ khi lô này có gửi request lẻ
+                if (toFetch.Count > 0) await Task.Delay(Random.Shared.Next(1500, 3000));
             }
 
-            _logger.LogInformation("✅ [Hangfire/Dual-Layer] Cập nhật giá xong: {Changed}/{Total} sản phẩm đổi giá, {OutOfStock} sản phẩm đang hết hàng.",
-                priceChanges, productsToUpdate.Count, outOfStockCount);
+            _logger.LogInformation("✅ [Hangfire/Dual-Layer] Cập nhật giá xong: {Changed}/{Total} sản phẩm đổi giá ({Batched} lấy theo lô), {OutOfStock} sản phẩm đang hết hàng.",
+                priceChanges, productsToUpdate.Count, batchResults.Count, outOfStockCount);
+        }
+
+        /// <summary>
+        /// Gom sản phẩm theo sàn có <see cref="IBatchPriceScraper"/> và lấy giá theo lô. Sàn lỗi toàn bộ → bỏ qua (cào lẻ dự phòng).
+        /// </summary>
+        /// <returns>Kết quả theo ProductId.</returns>
+        private async Task<Dictionary<Guid, BatchPriceResult>> FetchBatchPricesAsync(IReadOnlyCollection<Product> products)
+        {
+            var results = new Dictionary<Guid, BatchPriceResult>();
+
+            var byPlatform = products
+                .Select(p => (Product: p, Scraper: _scrapers.TryResolve(p.ProductLink, out var s) ? s as IBatchPriceScraper : null))
+                .Where(x => x.Scraper != null)
+                .GroupBy(x => x.Scraper);
+
+            foreach (var group in byPlatform)
+            {
+                var scraper = group.Key;
+                var requests = new List<BatchPriceRequest>();
+                var productsByUrl = new Dictionary<string, List<Product>>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var (product, _) in group)
+                {
+                    if (!scraper.TryNormalizeProductUrl(product.ProductLink, out var url)) continue;
+                    if (!productsByUrl.TryGetValue(url, out var list))
+                    {
+                        productsByUrl[url] = list = new List<Product>();
+                        requests.Add(new BatchPriceRequest { ProductUrl = url, PlatformProductId = product.PlatformProductId });
+                    }
+                    list.Add(product);
+                }
+
+                try
+                {
+                    var prices = await scraper.GetCurrentPricesAsync(requests);
+                    foreach (var (url, price) in prices)
+                    {
+                        if (!productsByUrl.TryGetValue(url, out var list)) continue;
+                        foreach (var product in list) results[product.ProductId] = price;
+                    }
+
+                    _logger.LogInformation("📦 {Platform}: {Got}/{Total} sản phẩm lấy giá theo lô.", scraper.Platform, prices.Count, requests.Count);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "⚠️ Lấy giá theo lô trên {Platform} lỗi – chuyển sang cào từng sản phẩm.", scraper.Platform);
+                }
+            }
+
+            return results;
         }
 
         private enum ScrapeOutcome { Unchanged, StockChanged, PriceChanged }

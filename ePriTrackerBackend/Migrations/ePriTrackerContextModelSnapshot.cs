@@ -167,6 +167,10 @@ namespace ePriTrackerBackend.Migrations
                     b.Property<DateTimeOffset?>("OutOfStockSince")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<string>("PlatformProductId")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
                     b.Property<string>("ProductLink")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");

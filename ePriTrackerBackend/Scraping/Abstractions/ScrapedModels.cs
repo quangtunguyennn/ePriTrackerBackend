@@ -26,6 +26,22 @@ namespace ePriTrackerBackend.Scraping.Abstractions
         public bool IsInStock => Price > 0 && IsAvailable != false;
     }
 
+    /// <summary>Một sản phẩm cần lấy giá theo lô.</summary>
+    public sealed class BatchPriceRequest
+    {
+        /// <summary>Link đã chuẩn hoá (khoá của kết quả trả về).</summary>
+        public string ProductUrl { get; init; }
+        /// <summary>Mã sản phẩm trên sàn đã lưu từ lần trước (null → sàn tự tra từ link).</summary>
+        public string PlatformProductId { get; init; }
+    }
+
+    public sealed class BatchPriceResult
+    {
+        public ScrapedProduct Product { get; init; }
+        /// <summary>Mã sản phẩm trên sàn – nơi gọi lưu lại để lần sau khỏi tra.</summary>
+        public string PlatformProductId { get; init; }
+    }
+
     /// <summary>
     /// Sự kiện khuyến mãi đang chạy trên sàn.
     /// </summary>
