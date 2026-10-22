@@ -1,6 +1,7 @@
 using ePriTrackerBackend.Scraping.Abstractions;
 using ePriTrackerBackend.Scraping.CellphoneS;
 using ePriTrackerBackend.Scraping.Core;
+using ePriTrackerBackend.Scraping.Hacom;
 using ePriTrackerBackend.Scraping.Tiki;
 using ePriTrackerBackend.Services;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -22,7 +23,7 @@ namespace ePriTrackerBackend.Scraping
 
             services.AddTikiScraper();
             services.AddCellphoneSScraper();
-            // services.AddXxxScraper(); ← thêm sàn mới tại đây
+            services.AddHacomScraper();
 
             // Bộ chọn sàn nhận tất cả IPlatformScraper đã đăng ký ở trên
             services.AddSingleton<IPlatformScraperResolver, PlatformScraperResolver>();
@@ -86,6 +87,31 @@ namespace ePriTrackerBackend.Scraping
             // Sự kiện tự đăng từ trang chủ (cần trình duyệt vì dữ liệu nạp bằng JavaScript)
             services.TryAddSingleton<IPageRenderer, PlaywrightPageRenderer>();
             services.AddSingleton<IAutoEventSource, CellphoneSEventSource>();
+
+            return services;
+        }
+
+        private static IServiceCollection AddHacomScraper(this IServiceCollection services)
+        {
+            // Trang HTML có JSON-LD – dùng HtmlJsonLdFetchStrategy tương tự CellphoneS
+            services.AddPlatformHttpClient(HacomScraper.PlatformName, HacomScraper.PlatformName, client =>
+            {
+                client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+                client.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml");
+                client.DefaultRequestHeaders.Add("Accept-Language", "vi-VN,vi;q=0.9");
+            });
+
+            services.AddKeyedSingleton<IHybridFetcher>(HacomScraper.PlatformName, (sp, _) => new HybridFetcher(
+                new IFetchStrategy[]
+                {
+                    new HtmlJsonLdFetchStrategy(sp.GetRequiredService<IHttpClientFactory>(), HacomScraper.PlatformName,
+                        new Dictionary<string, string> { [HacomScraper.DescriptionHtmlField] = HacomScraper.DescriptionXPath })
+                },
+                sp.GetRequiredService<IScraperMetrics>(),
+                sp.GetRequiredService<ILogger<HybridFetcher>>()));
+
+            services.AddSingleton<HacomScraper>();
+            services.AddSingleton<IPlatformScraper>(sp => sp.GetRequiredService<HacomScraper>());
 
             return services;
         }

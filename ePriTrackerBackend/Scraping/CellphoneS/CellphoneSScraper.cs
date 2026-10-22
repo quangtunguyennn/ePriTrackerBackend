@@ -1,17 +1,21 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using ePriTrackerBackend.Scraping.Abstractions;
 using ePriTrackerBackend.Scraping.Core;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace ePriTrackerBackend.Scraping.CellphoneS
 {
     /// <summary>
-    /// Strategy cho CellphoneS: đọc dữ liệu schema.org (JSON-LD) trong trang sản phẩm.
-    /// KHÔNG cài <see cref="ISearchablePlatformScraper"/> vì robots.txt của CellphoneS cấm trang tìm kiếm (/catalogsearch/)
-    /// – gợi ý cho sản phẩm CellphoneS được tìm trên các sàn khác.
+    /// Strategy cho CellphoneS: đọc dữ liệu schema.org (JSON-LD) trong trang sản phẩm,
+    /// và tìm kiếm sản phẩm (cho gợi ý) bằng cách render trang tìm kiếm bằng Playwright rồi đọc HTML.
+    /// LƯU Ý: robots.txt của CellphoneS cấm trang tìm kiếm (/catalogsearch/). Trước đây nhóm cố ý không cài tìm kiếm vì lý do này;
+    /// việc bật lại là quyết định của nhóm. Nên đặt "Scraping:Platforms:CellphoneS:MinIntervalMs" và giữ số lần tìm ở mức thấp.
     /// </summary>
-    public class CellphoneSScraper : IPlatformScraper
+    public class CellphoneSScraper : ISearchablePlatformScraper
     {
         public const string PlatformName = "CellphoneS";
 
@@ -21,11 +25,29 @@ namespace ePriTrackerBackend.Scraping.CellphoneS
         /// <summary>"Tính năng nổi bật" + bài viết chi tiết. Máy cũ / sản phẩm ngừng bán không có 2 khối này.</summary>
         public const string DescriptionXPath = "//div[@id='cpsKsp'] | //div[@id='cpsContentSEO']";
 
-        private readonly IHybridFetcher _fetcher;
+        /// <summary>
+        /// Mẫu URL trang tìm kiếm, {0} = từ khoá đã mã hoá URL. Ghi đè được bằng cấu hình "Scraping:Platforms:CellphoneS:SearchUrlTemplate"
+        /// (không cần biên dịch lại). CẦN XÁC MINH: gõ thử vào ô tìm kiếm trên cellphones.com.vn rồi so với URL trình duyệt hiển thị.
+        /// </summary>
+        private const string DefaultSearchUrlTemplate = "https://cellphones.com.vn/catalogsearch/result/?q={0}";
 
-        public CellphoneSScraper([FromKeyedServices(PlatformName)] IHybridFetcher fetcher)
+        private readonly IHybridFetcher _fetcher;
+        private readonly IPageRenderer _renderer;
+        private readonly ILogger<CellphoneSScraper> _logger;
+        private readonly string _searchUrlTemplate;
+
+        public CellphoneSScraper(
+            [FromKeyedServices(PlatformName)] IHybridFetcher fetcher,
+            IPageRenderer renderer,
+            IConfiguration configuration,
+            ILogger<CellphoneSScraper> logger)
         {
             _fetcher = fetcher ?? throw new ArgumentNullException(nameof(fetcher));
+            _renderer = renderer ?? throw new ArgumentNullException(nameof(renderer));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+
+            string configured = configuration?[$"Scraping:Platforms:{PlatformName}:SearchUrlTemplate"];
+            _searchUrlTemplate = !string.IsNullOrWhiteSpace(configured) && configured.Contains("{0}") ? configured : DefaultSearchUrlTemplate;
         }
 
         public string Platform => PlatformName;
@@ -59,6 +81,41 @@ namespace ePriTrackerBackend.Scraping.CellphoneS
                 Url = url,
                 IsAvailable = offer is JsonElement a ? ParseAvailability(GetString(a, "availability")) : null
             };
+        }
+
+        /// <summary>
+        /// Trang tìm kiếm nạp kết quả bằng JavaScript → phải render bằng trình duyệt (IPageRenderer), HttpClient không đủ.
+        /// Dùng chế độ render nhanh (<see cref="PageRenderOptions.Search"/>: chờ giá xuất hiện, không cuộn 10 lần).
+        /// Không áp <see cref="FetchOptions.Timeout"/> (render có timeout riêng; huỷ giữa chừng chỉ làm mất kết quả).
+        /// Không đi qua HybridFetcher nên không ghi telemetry.
+        /// </summary>
+        public async Task<IReadOnlyList<ScrapedProduct>> SearchAsync(string keyword, int limit, FetchOptions options = null, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(keyword) || limit <= 0) return Array.Empty<ScrapedProduct>();
+
+            string searchUrl = SearchResultHtmlParser.BuildSearchUrl(_searchUrlTemplate, keyword);
+
+            var sw = Stopwatch.StartNew();
+            string html = await _renderer.RenderAsync(searchUrl, PageRenderOptions.Search, cancellationToken);
+            long renderMs = sw.ElapsedMilliseconds;
+
+            var products = SearchResultHtmlParser.Parse(html, searchUrl, ResolveProductLink, limit);
+            _logger.LogInformation("[CellphoneS] Tìm '{Keyword}': {Count} sản phẩm (render {RenderMs}ms, đọc {ParseMs}ms) {Url}",
+                keyword, products.Count, renderMs, sw.ElapsedMilliseconds - renderMs, searchUrl);
+
+            if (products.Count == 0)
+                SearchResultHtmlParser.DumpForDebug(_logger, PlatformName, searchUrl, html);
+
+            return products;
+        }
+
+        // Chỉ nhận link trang sản phẩm của CellphoneS; trả link chuẩn hoá + slug làm mã ngoài (giống GetProductAsync)
+        private static (string Url, string ExternalId)? ResolveProductLink(string url)
+        {
+            if (CellphoneSUrlParser.IsCellphoneSUrl(url) && CellphoneSUrlParser.TryGetSlug(url, out var slug))
+                return (CellphoneSUrlParser.NormalizeProductUrl(slug), slug);
+
+            return null;
         }
 
         /// <summary>
