@@ -13,6 +13,12 @@ namespace ePriTrackerBackend.Repositories
         Task<Item> FindAsync(Guid userId, Guid productId);
         void Add(Item item);
         void Remove(Item item);
+
+        /// <summary>Danh sách theo dõi của user, kèm sản phẩm, sản phẩm thêm mới nhất trước.</summary>
+        Task<List<Item>> GetByUserWithProductsAsync(Guid userId);
+
+        /// <summary>Sản phẩm vừa có giá lần đầu (thêm lúc hết hàng) → điền giá ban đầu cho các lượt theo dõi còn trống.</summary>
+        Task<int> FillMissingInitialPriceAsync(Guid productId, decimal price);
     }
 
     public class TrackedItemRepository : ITrackedItemRepository
@@ -33,5 +39,18 @@ namespace ePriTrackerBackend.Repositories
         public void Add(Item item) => _context.Item.Add(item);
 
         public void Remove(Item item) => _context.Item.Remove(item);
+
+        public Task<List<Item>> GetByUserWithProductsAsync(Guid userId)
+            => _context.Item
+                .AsNoTracking()
+                .Include(i => i.Product)
+                .Where(i => i.UserId == userId)
+                .OrderByDescending(i => i.Product.AddedAt)
+                .ToListAsync();
+
+        public Task<int> FillMissingInitialPriceAsync(Guid productId, decimal price)
+            => _context.Item
+                .Where(i => i.ProductId == productId && i.InitialPrice == null) // không bao giờ lưu giá 0 → chỉ cần xét null
+                .ExecuteUpdateAsync(s => s.SetProperty(i => i.InitialPrice, (decimal?)price));
     }
 }

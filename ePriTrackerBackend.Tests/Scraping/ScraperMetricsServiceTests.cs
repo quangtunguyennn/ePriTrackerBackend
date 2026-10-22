@@ -60,6 +60,7 @@ namespace ePriTrackerBackend.Tests.Scraping
         {
             // TikiBrowserService chỉ có DisposeAsync → container phải dispose bất đồng bộ (giống host ASP.NET)
             await using var provider = new ServiceCollection()
+                .AddSingleton<IConfiguration>(new ConfigurationBuilder().Build()) // HacomScraper đọc cấu hình (như host thật)
                 .AddLogging()
                 .AddScraping()
                 .BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true });

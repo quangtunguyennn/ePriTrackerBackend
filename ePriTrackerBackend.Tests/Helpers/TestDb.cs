@@ -67,7 +67,6 @@ namespace ePriTrackerBackend.Tests.Helpers
                 ProductName = name,
                 ProductLink = link,
                 ImageURL = "img.jpg",
-                InitialPrice = price,
                 LatestPrice = price,
                 AddedAt = addedAt ?? DateTime.UtcNow
             };
@@ -76,9 +75,14 @@ namespace ePriTrackerBackend.Tests.Helpers
             return product;
         }
 
+        /// <summary>Theo dõi như service thật: giá ban đầu = giá hiện tại (chưa có giá → null).</summary>
         public void Track(User user, Product product)
         {
-            Context.Item.Add(new Item { ItemId = Guid.NewGuid(), UserId = user.UserId, ProductId = product.ProductId });
+            Context.Item.Add(new Item
+            {
+                ItemId = Guid.NewGuid(), UserId = user.UserId, ProductId = product.ProductId,
+                InitialPrice = product.LatestPrice > 0 ? product.LatestPrice : null
+            });
             Context.SaveChanges();
         }
 

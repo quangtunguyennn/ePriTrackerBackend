@@ -50,7 +50,9 @@ namespace ePriTrackerBackend.Services.Suggestions
             if (string.IsNullOrWhiteSpace(keyword))
                 return new List<SuggestionProduct>();
 
-            decimal referencePrice = 10; // FIX
+            // Giá ban đầu nay lưu theo từng người (bảng Item); gợi ý dùng chung cho mọi người theo dõi → so với giá hiện tại.
+            // Chưa có giá (hết hàng) → 0 = không lọc theo giá.
+            decimal referencePrice = _matcher.GetReferencePrice(0m, product.LatestPrice);
             sourceScraper.TryNormalizeProductUrl(product.ProductLink, out var originalLink);
 
             var candidates = await SearchAllPlatformsAsync(keyword, options, cancellationToken);
@@ -144,7 +146,7 @@ namespace ePriTrackerBackend.Services.Suggestions
         private string ByPlatform(IEnumerable<string> urls)
         {
             var parts = urls
-                .GroupBy(u => _scrapers.TryResolve(u, out var scraper) ? scraper.Platform : "?")
+                .GroupBy(u => !string.IsNullOrWhiteSpace(u) && _scrapers.TryResolve(u, out var scraper) ? scraper.Platform : "?")
                 .Select(g => $"{g.Key}={g.Count()}");
 
             string text = string.Join(", ", parts);
