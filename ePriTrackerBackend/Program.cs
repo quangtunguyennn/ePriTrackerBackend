@@ -1,8 +1,10 @@
 ﻿using ePriTrackerBackend.Extensions;
 using ePriTrackerBackend.Models.Context;
+using ePriTrackerBackend.Repositories;
 using ePriTrackerBackend.Scraping;
 using ePriTrackerBackend.Services;
 using ePriTrackerBackend.Services.Events;
+using ePriTrackerBackend.Services.YouTube;
 using Hangfire;
 using Hangfire.SqlServer;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -55,6 +57,9 @@ builder.Services.AddScraping();             // Telemetry, các sàn TMĐT (Strat
 builder.Services.AddRepositories();         // Truy cập DB – Extensions/ApplicationServiceCollectionExtensions.cs
 builder.Services.AddApplicationServices();  // Nghiệp vụ + điểm vào job Hangfire – cùng file trên
 
+builder.Services.AddScoped<IPriceHistoryRepository, PriceHistoryRepository>();
+builder.Services.AddScoped<IPriceHistoryService, PriceHistoryService>();
+builder.Services.AddScoped<IYouTubeService, YouTubeService>();
 builder.Services.AddControllers();
 
 // ==========================================
