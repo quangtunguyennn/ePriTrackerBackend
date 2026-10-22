@@ -14,11 +14,32 @@ namespace ePriTrackerBackend.Tests.Services
         private readonly TestDb _db = new();
         private readonly FakeEventScraper _scraper = new();
         private readonly MemoryCache _cache = new(new MemoryCacheOptions());
+        private readonly FakeAutoEventSync _autoSync;
         private readonly EventService _service;
+
+        /// <summary>Giả lập job đồng bộ sự kiện tự đăng: ghi nhận lần gọi, có thể "đồng bộ" bằng cách điền cache.</summary>
+        private sealed class FakeAutoEventSync : IAutoEventSyncService
+        {
+            private readonly IMemoryCache _cache;
+            public FakeAutoEventSync(IMemoryCache cache) => _cache = cache;
+
+            public List<string> SyncedPlatforms { get; } = new();
+            public Dictionary<Guid, List<LiveEventProductDTO>> ProductsAfterSync { get; } = new();
+
+            public Task SyncAllAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+            public Task<bool> SyncPlatformAsync(string platform, CancellationToken cancellationToken = default)
+            {
+                SyncedPlatforms.Add(platform);
+                foreach (var (eventId, products) in ProductsAfterSync) _cache.Set(EventService.LiveProductsCacheKey(eventId), products);
+                return Task.FromResult(true);
+            }
+        }
 
         public EventServiceTests()
         {
-            _service = new EventService(new EventRepository(_db.Context), _scraper, new EfUnitOfWork(_db.Context), _cache, NullLogger<EventService>.Instance);
+            _autoSync = new FakeAutoEventSync(_cache);
+            _service = new EventService(new EventRepository(_db.Context), _scraper, _autoSync, new EfUnitOfWork(_db.Context), _cache, NullLogger<EventService>.Instance);
         }
 
         public void Dispose()
@@ -130,6 +151,71 @@ namespace ePriTrackerBackend.Tests.Services
             Assert.Single(cached!);
             Assert.False(_cache.TryGetValue(EventService.LiveProductsCacheKey(broken.EventId), out _));
             Assert.False(_cache.TryGetValue(EventService.LiveProductsCacheKey(hidden.EventId), out _));
+        }
+
+        [Fact]
+        public async Task AdminFeatures_IgnoreAutoPublishedEvents()
+        {
+            var cps = _db.AddEvent("Flash sale", "https://cellphones.com.vn/#flash", platform: "CellphoneS", endsAt: DateTimeOffset.UtcNow.AddHours(1));
+            var tiki = _db.AddEvent("Tiki sale", "https://tiki.vn/k/sale");
+
+            var preview = await _service.GetPreviewAsync();          // Tiki không trả sự kiện nào
+            var adminList = await _service.GetAllForAdminAsync();
+
+            Assert.Equal(tiki.EventId, Assert.Single(preview).EventId); // CellphoneS không bị coi là "hết hạn trên Tiki"
+            Assert.Equal(tiki.EventId, Assert.Single(adminList).EventId);
+            Assert.Null(await _service.TogglePublishAsync(cps.EventId));
+            Assert.False(await _service.DeleteAsync(cps.EventId));
+            Assert.Equal(2, _db.Fresh().Event.Count());
+        }
+
+        [Fact]
+        public async Task Publish_AlwaysAdminPlatform()
+        {
+            await _service.PublishAsync(new Event { Title = "Sale", EventLink = "https://tiki.vn/k/sale", ImageUrl = "x", Platform = "CellphoneS" });
+
+            Assert.Equal("Tiki", Assert.Single(_db.Fresh().Event).Platform);
+        }
+
+        [Fact]
+        public async Task GetPublished_HidesExpired_KeepsOldAutoEvents()
+        {
+            var running = _db.AddEvent("Dang chay", "https://cellphones.com.vn/#a", platform: "CellphoneS", endsAt: DateTimeOffset.UtcNow.AddMinutes(30));
+            _db.AddEvent("Het gio", "https://cellphones.com.vn/#b", platform: "CellphoneS", endsAt: DateTimeOffset.UtcNow.AddMinutes(-1));
+            // Sự kiện tự đăng tạo từ lâu nhưng vẫn được gia hạn → không bị luật "14 ngày" của Admin xoá
+            var longRunning = _db.AddEvent("Deal soc", "https://cellphones.com.vn/#c", platform: "CellphoneS",
+                createdAt: DateTime.UtcNow.AddDays(-20), endsAt: DateTimeOffset.UtcNow.AddHours(5));
+
+            var events = await _service.GetPublishedAsync();
+
+            Assert.Equal(new[] { running.EventId, longRunning.EventId }, events.Select(e => e.EventId));
+            Assert.Equal(3, _db.Fresh().Event.Count()); // hết hạn chỉ bị ẩn – job đồng bộ mới xoá
+        }
+
+        [Fact]
+        public async Task LiveProducts_AutoEvent_CacheMiss_SyncsPlatform_NotTikiScraper()
+        {
+            var evt = _db.AddEvent("Flash", "https://cellphones.com.vn/#flash", platform: "CellphoneS", endsAt: DateTimeOffset.UtcNow.AddHours(1));
+            var missing = _db.AddEvent("Khac", "https://cellphones.com.vn/#khac", platform: "CellphoneS", endsAt: DateTimeOffset.UtcNow.AddHours(1));
+            _autoSync.ProductsAfterSync[evt.EventId] = new() { new LiveEventProductDTO { ProductName = "Laptop" } };
+
+            var ok = await _service.GetLiveProductsAsync(evt.EventId);
+            var none = await _service.GetLiveProductsAsync(missing.EventId);
+
+            Assert.Equal("Laptop", Assert.Single(ok.Products).ProductName);
+            Assert.Equal(LiveProductsStatus.NoProducts, none.Status);
+            Assert.All(_autoSync.SyncedPlatforms, p => Assert.Equal("CellphoneS", p));
+            Assert.Equal(0, _scraper.ProductCalls);
+        }
+
+        [Fact]
+        public async Task RefreshCache_SkipsAutoEvents()
+        {
+            _db.AddEvent("Flash", "https://cellphones.com.vn/#flash", platform: "CellphoneS", endsAt: DateTimeOffset.UtcNow.AddHours(1));
+
+            await _service.RefreshAllLiveProductsCacheAsync();
+
+            Assert.Equal(0, _scraper.ProductCalls);
         }
 
         [Fact]

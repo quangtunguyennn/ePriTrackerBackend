@@ -9,12 +9,15 @@ namespace ePriTrackerBackend.Repositories
     /// </summary>
     public interface IEventRepository
     {
-        Task<List<Event>> GetAllAsync();
-        Task<List<Event>> GetAllNewestFirstAsync();
+        /// <summary>Mọi sự kiện của một sàn (có theo dõi thay đổi để cập nhật/xoá).</summary>
+        Task<List<Event>> GetByPlatformAsync(string platform);
+        Task<List<Event>> GetByPlatformNewestFirstAsync(string platform);
+
+        /// <summary>Sự kiện đang bật hiển thị của mọi sàn, mới nhất trước. Lọc hết hạn (EndsAt) ở tầng service.</summary>
         Task<List<Event>> GetPublishedNewestFirstAsync();
-        Task<List<Event>> GetCreatedBeforeAsync(DateTime createdBeforeUtc);
+        Task<List<Event>> GetCreatedBeforeAsync(DateTime createdBeforeUtc, string platform);
         Task<Event> FindByIdAsync(Guid eventId);
-        Task<Event> FindByTitleOrLinkAsync(string title, string eventLink);
+        Task<Event> FindByTitleOrLinkAsync(string title, string eventLink, string platform);
 
         /// <summary>Sự kiện đầu tiên có link chứa mã chiến dịch (không phân biệt hoa thường).</summary>
         Task<Event> FindByLinkContainingAsync(string campaignCode);
@@ -36,21 +39,22 @@ namespace ePriTrackerBackend.Repositories
             _context = context ?? throw new ArgumentNullException(nameof(context));
         }
 
-        public Task<List<Event>> GetAllAsync() => _context.Event.ToListAsync();
+        public Task<List<Event>> GetByPlatformAsync(string platform)
+            => _context.Event.Where(e => e.Platform == platform).ToListAsync();
 
-        public Task<List<Event>> GetAllNewestFirstAsync()
-            => _context.Event.OrderByDescending(e => e.CreatedAt).ToListAsync();
+        public Task<List<Event>> GetByPlatformNewestFirstAsync(string platform)
+            => _context.Event.Where(e => e.Platform == platform).OrderByDescending(e => e.CreatedAt).ToListAsync();
 
         public Task<List<Event>> GetPublishedNewestFirstAsync()
             => _context.Event.Where(e => e.IsPublished == true).OrderByDescending(e => e.CreatedAt).ToListAsync();
 
-        public Task<List<Event>> GetCreatedBeforeAsync(DateTime createdBeforeUtc)
-            => _context.Event.Where(e => e.CreatedAt < createdBeforeUtc).ToListAsync();
+        public Task<List<Event>> GetCreatedBeforeAsync(DateTime createdBeforeUtc, string platform)
+            => _context.Event.Where(e => e.Platform == platform && e.CreatedAt < createdBeforeUtc).ToListAsync();
 
         public async Task<Event> FindByIdAsync(Guid eventId) => await _context.Event.FindAsync(eventId);
 
-        public Task<Event> FindByTitleOrLinkAsync(string title, string eventLink)
-            => _context.Event.FirstOrDefaultAsync(e => e.Title == title || e.EventLink == eventLink);
+        public Task<Event> FindByTitleOrLinkAsync(string title, string eventLink, string platform)
+            => _context.Event.FirstOrDefaultAsync(e => e.Platform == platform && (e.Title == title || e.EventLink == eventLink));
 
         public Task<Event> FindByLinkContainingAsync(string campaignCode)
             => _context.Event.FirstOrDefaultAsync(e => e.EventLink.ToLower().Contains(campaignCode));

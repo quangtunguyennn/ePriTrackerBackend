@@ -27,6 +27,7 @@ namespace ePriTrackerBackend.Models.Mappings
             {
                 ProductId = scraped.ExternalId,
                 ProductName = scraped.Name ?? "Sản phẩm ẩn",
+                Desc = scraped.Description ?? "", // vd flash sale CellphoneS: "Đã bán 1/10 suất"
                 InitialPrice = scraped.OriginalPrice ?? price, // Không có giá gốc → coi như không giảm
                 LatestPrice = price,
                 ImageURL = scraped.ImageUrl ?? "",

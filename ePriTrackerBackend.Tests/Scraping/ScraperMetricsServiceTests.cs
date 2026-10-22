@@ -1,6 +1,8 @@
 using System.Text.Json;
 using ePriTrackerBackend.Scraping;
 using ePriTrackerBackend.Scraping.Abstractions;
+using ePriTrackerBackend.Scraping.Core;
+using Microsoft.Extensions.Configuration;
 using ePriTrackerBackend.Scraping.Tiki;
 using ePriTrackerBackend.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -72,6 +74,27 @@ namespace ePriTrackerBackend.Tests.Scraping
             Assert.True(provider.GetRequiredService<IPlatformScraperResolver>().TryResolve("https://tiki.vn/a-p1.html", out var scraper));
             Assert.IsType<TikiScraper>(scraper);
             Assert.Same(scraper, provider.GetRequiredService<IEventScraper>());
+
+            // Tiki hỗ trợ tìm kiếm (nguồn gợi ý); thiếu cấu hình → không giới hạn tốc độ (giữ hành vi cũ)
+            Assert.Contains(scraper, provider.GetRequiredService<IPlatformScraperResolver>().SearchablePlatforms);
+            Assert.Equal(TimeSpan.Zero, provider.GetRequiredKeyedService<MinIntervalGate>(TikiScraper.PlatformName).MinInterval);
+        }
+
+        [Fact]
+        public async Task AddScraping_ReadsRateLimitFromConfiguration()
+        {
+            var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Scraping:Platforms:Tiki:MinIntervalMs"] = "1500"
+            }).Build();
+
+            await using var provider = new ServiceCollection()
+                .AddSingleton<IConfiguration>(config)
+                .AddLogging()
+                .AddScraping()
+                .BuildServiceProvider();
+
+            Assert.Equal(TimeSpan.FromMilliseconds(1500), provider.GetRequiredKeyedService<MinIntervalGate>(TikiScraper.PlatformName).MinInterval);
         }
     }
 }

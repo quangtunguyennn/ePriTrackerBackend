@@ -1,6 +1,7 @@
 using ePriTrackerBackend.Models.DTOs;
 using ePriTrackerBackend.Models.Entities;
 using ePriTrackerBackend.Repositories;
+using ePriTrackerBackend.Scraping.Abstractions;
 
 namespace ePriTrackerBackend.Services.Suggestions
 {
@@ -23,6 +24,7 @@ namespace ePriTrackerBackend.Services.Suggestions
         private readonly ISuggestionRepository _suggestions;
         private readonly ISuggestionFinder _finder;
         private readonly IUnitOfWork _unitOfWork;
+        private readonly IPlatformScraperResolver _scrapers; // chỉ dùng để gắn tên sàn cho từng gợi ý
         private readonly ILogger<SuggestionService> _logger;
 
         public SuggestionService(
@@ -30,12 +32,14 @@ namespace ePriTrackerBackend.Services.Suggestions
             ISuggestionRepository suggestions,
             ISuggestionFinder finder,
             IUnitOfWork unitOfWork,
+            IPlatformScraperResolver scrapers,
             ILogger<SuggestionService> logger)
         {
             _products = products ?? throw new ArgumentNullException(nameof(products));
             _suggestions = suggestions ?? throw new ArgumentNullException(nameof(suggestions));
             _finder = finder ?? throw new ArgumentNullException(nameof(finder));
             _unitOfWork = unitOfWork ?? throw new ArgumentNullException(nameof(unitOfWork));
+            _scrapers = scrapers ?? throw new ArgumentNullException(nameof(scrapers));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
@@ -95,7 +99,7 @@ namespace ePriTrackerBackend.Services.Suggestions
             }
         }
 
-        private static List<SuggestionProductDTO> ToDtos(IEnumerable<SuggestionProduct> suggestions)
+        private List<SuggestionProductDTO> ToDtos(IEnumerable<SuggestionProduct> suggestions)
         {
             var now = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7));
 
@@ -107,7 +111,9 @@ namespace ePriTrackerBackend.Services.Suggestions
                     Price = s.Price,
                     ImageURL = s.ImageURL,
                     ProductLink = s.ProductLink,
-                    LastUpdatedAt = now
+                    LastUpdatedAt = now,
+                    // Suy ra từ link → không cần lưu thêm cột trong DB
+                    Platform = _scrapers.TryResolve(s.ProductLink, out var scraper) ? scraper.Platform : null
                 })
                 .ToList();
         }

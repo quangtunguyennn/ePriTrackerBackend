@@ -34,6 +34,12 @@ namespace ePriTrackerBackend.Migrations
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 
+                    b.Property<DateTimeOffset?>("EndsAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<bool>("EndsAtIsExact")
+                        .HasColumnType("bit");
+
                     b.Property<string>("EventLink")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
@@ -48,6 +54,14 @@ namespace ePriTrackerBackend.Migrations
 
                     b.Property<bool>("IsPublished")
                         .HasColumnType("bit");
+
+                    b.Property<string>("Platform")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("PreviewImageUrls")
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<int>("TikiEventId")
                         .HasColumnType("int");
@@ -141,11 +155,17 @@ namespace ePriTrackerBackend.Migrations
                     b.Property<decimal>("InitialPrice")
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<bool>("IsInStock")
+                        .HasColumnType("bit");
+
                     b.Property<DateTimeOffset?>("LastUpdatedAt")
                         .HasColumnType("datetimeoffset");
 
                     b.Property<decimal?>("LatestPrice")
                         .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTimeOffset?>("OutOfStockSince")
+                        .HasColumnType("datetimeoffset");
 
                     b.Property<string>("ProductLink")
                         .IsRequired()

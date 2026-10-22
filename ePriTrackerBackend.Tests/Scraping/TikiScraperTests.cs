@@ -66,6 +66,20 @@ namespace ePriTrackerBackend.Tests.Scraping
             Assert.Equal("img.jpg", product.ImageUrl);
             Assert.Equal("mô tả", product.Description);
             Assert.Equal("https://tiki.vn/product-p123.html", product.Url);
+            Assert.Null(product.IsAvailable); // API không trả inventory_status → không kết luận
+        }
+
+        [Fact]
+        public async Task GetProductAsync_ReadsInventoryStatus()
+        {
+            // Như sản phẩm mẫu iPhone 11 lúc kiểm tra: "upcoming" nhưng vẫn có giá
+            var fetcher = new FakeFetcher(_ => Json("{\"name\":\"Apple iPhone 11\",\"price\":15999000,\"inventory_status\":\"upcoming\"}"));
+
+            var product = await Create(fetcher).GetProductAsync("https://tiki.vn/iphone-p184036446.html");
+
+            Assert.False(product.IsAvailable);
+            Assert.False(product.IsInStock);
+            Assert.Equal(15999000m, product.Price);
         }
 
         [Fact]

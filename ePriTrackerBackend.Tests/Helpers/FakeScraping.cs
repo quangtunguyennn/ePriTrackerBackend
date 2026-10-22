@@ -6,7 +6,7 @@ namespace ePriTrackerBackend.Tests.Helpers
     /// <summary>
     /// Sàn giả "fake.vn" cho test service: link dạng https://fake.vn/abc-p123.html, không gọi mạng.
     /// </summary>
-    internal sealed class FakePlatformScraper : IPlatformScraper
+    internal sealed class FakePlatformScraper : ISearchablePlatformScraper
     {
         private static readonly Regex IdRegex = new(@"-p(\d+)\.html");
 
@@ -50,10 +50,15 @@ namespace ePriTrackerBackend.Tests.Helpers
             scraper = _scraper.CanHandle(productUrl) ? _scraper : null!;
             return scraper != null;
         }
+
+        public IReadOnlyList<ISearchablePlatformScraper> SearchablePlatforms
+            => _scraper is ISearchablePlatformScraper s ? new[] { s } : Array.Empty<ISearchablePlatformScraper>();
     }
 
     internal sealed class FakeEventScraper : IEventScraper
     {
+        public string Platform => "Tiki";
+
         public List<ScrapedEvent> CurrentEvents { get; } = new();
 
         /// <summary>Sản phẩm theo link sự kiện. Link có trong <see cref="FailingUrls"/> → ném lỗi.</summary>

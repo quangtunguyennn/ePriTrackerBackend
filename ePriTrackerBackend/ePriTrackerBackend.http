@@ -7,6 +7,7 @@
 @adminEmail = <email tài khoản Admin của bạn>
 @adminPassword = <mật khẩu Admin>
 @tikiLink = https://tiki.vn/product-p184036446.html
+@cellphonesLink = https://cellphones.com.vn/robot-hut-bui-lau-nha-roborock-saros-20-flow.html
 @userToken = {{loginUser.response.body.$.token}}
 @adminToken = {{loginAdmin.response.body.$.token}}
 
@@ -44,6 +45,20 @@ Authorization: Bearer {{userToken}}
 Content-Type: application/json
 
 "{{tikiLink}}"
+
+### 5b. Thêm sản phẩm CellphoneS (đọc JSON-LD; sản phẩm hết hàng vẫn thêm được, isInStock = false)
+POST {{host}}/api/product/add
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+"{{cellphonesLink}}"
+
+### 5c. Link không thuộc sàn nào được hỗ trợ → 400 "Link sản phẩm không hợp lệ hoặc sàn chưa được hỗ trợ."
+POST {{host}}/api/product/add
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+"https://cellphones.com.vn/laptop/asus.html"
 
 ### 6. Danh sách sản phẩm đang theo dõi
 # @name allProducts

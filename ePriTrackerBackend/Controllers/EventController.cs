@@ -101,7 +101,7 @@ namespace ePriTrackerBackend.Controllers
                 return result.Status switch
                 {
                     LiveProductsStatus.EventNotFound => NotFound(new { message = "Không tìm thấy sự kiện trong hệ thống." }),
-                    LiveProductsStatus.NoProducts => BadRequest(new { message = "Sự kiện này đã kết thúc trên Tiki hoặc không có sản phẩm." }),
+                    LiveProductsStatus.NoProducts => BadRequest(new { message = "Sự kiện này đã kết thúc trên sàn hoặc không có sản phẩm." }),
                     _ => Ok(result.Products)
                 };
             }

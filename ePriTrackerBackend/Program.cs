@@ -2,6 +2,7 @@
 using ePriTrackerBackend.Models.Context;
 using ePriTrackerBackend.Scraping;
 using ePriTrackerBackend.Services;
+using ePriTrackerBackend.Services.Events;
 using Hangfire;
 using Hangfire.SqlServer;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -168,6 +169,15 @@ RecurringJob.AddOrUpdate<IEventCacheService>(
     new RecurringJobOptions { TimeZone = vietnamTz }
 );
 BackgroundJob.Enqueue<IEventCacheService>(service => service.RefreshLiveEventProductsCacheAsync());
+
+// 4. Sự kiện sàn tự đăng (CellphoneS): đăng sự kiện đang chạy, xoá sự kiện hết hạn – không qua Admin
+RecurringJob.AddOrUpdate<IAutoEventSyncService>(
+    "sync-auto-events-job",
+    service => service.SyncAllAsync(CancellationToken.None),
+    "*/15 * * * *",
+    new RecurringJobOptions { TimeZone = vietnamTz }
+);
+BackgroundJob.Enqueue<IAutoEventSyncService>(service => service.SyncAllAsync(CancellationToken.None));
 
 app.MapControllers();
 

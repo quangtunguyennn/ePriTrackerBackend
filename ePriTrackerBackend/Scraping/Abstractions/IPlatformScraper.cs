@@ -21,8 +21,14 @@ namespace ePriTrackerBackend.Scraping.Abstractions
         /// <summary>Lấy thông tin sản phẩm (tên, giá, ảnh...) từ link.</summary>
         /// <exception cref="ArgumentException">Link không chứa ID sản phẩm.</exception>
         Task<ScrapedProduct> GetProductAsync(string productUrl, CancellationToken cancellationToken = default);
+    }
 
-        /// <summary>Tìm sản phẩm theo từ khoá (dùng cho gợi ý sản phẩm rẻ hơn).</summary>
+    /// <summary>
+    /// Sàn cho phép tìm kiếm theo từ khoá (dùng cho gợi ý sản phẩm rẻ hơn). Tách riêng (ISP) vì có sàn
+    /// cấm trang tìm kiếm trong robots.txt (vd: CellphoneS) – sàn đó chỉ cài <see cref="IPlatformScraper"/>.
+    /// </summary>
+    public interface ISearchablePlatformScraper : IPlatformScraper
+    {
         Task<IReadOnlyList<ScrapedProduct>> SearchAsync(string keyword, int limit, FetchOptions options = null, CancellationToken cancellationToken = default);
     }
 
@@ -32,11 +38,27 @@ namespace ePriTrackerBackend.Scraping.Abstractions
     /// </summary>
     public interface IEventScraper
     {
+        /// <summary>Tên sàn – sự kiện do Admin duyệt/đăng thuộc sàn này.</summary>
+        string Platform { get; }
+
         /// <summary>Danh sách sự kiện đang chạy. Ném lỗi kèm nội dung sàn trả về nếu không lấy được sự kiện nào.</summary>
         Task<IReadOnlyList<ScrapedEvent>> GetCurrentEventsAsync(CancellationToken cancellationToken = default);
 
         /// <summary>Sản phẩm đang bày bán trong trang sự kiện. Lỗi thì trả danh sách rỗng.</summary>
         Task<IReadOnlyList<ScrapedProduct>> GetEventProductsAsync(string eventUrl, CancellationToken cancellationToken = default);
+    }
+
+    /// <summary>
+    /// Sàn có sự kiện TỰ ĐĂNG (không qua Admin): mỗi lần đọc trả ĐỦ các sự kiện đang chạy, kèm sản phẩm.
+    /// </summary>
+    public interface IAutoEventSource
+    {
+        string Platform { get; }
+
+        /// <summary>
+        /// Sự kiện đang chạy trên sàn. Ném lỗi khi không đọc được trang – nơi gọi KHÔNG được coi đó là "hết sự kiện".
+        /// </summary>
+        Task<IReadOnlyList<ScrapedEvent>> GetLiveEventsAsync(CancellationToken cancellationToken = default);
     }
 
     /// <summary>
@@ -46,5 +68,8 @@ namespace ePriTrackerBackend.Scraping.Abstractions
     {
         /// <returns>false nếu chưa có sàn nào hỗ trợ link này.</returns>
         bool TryResolve(string productUrl, out IPlatformScraper scraper);
+
+        /// <summary>Các sàn hỗ trợ tìm kiếm – nơi tìm sản phẩm gợi ý.</summary>
+        IReadOnlyList<ISearchablePlatformScraper> SearchablePlatforms { get; }
     }
 }

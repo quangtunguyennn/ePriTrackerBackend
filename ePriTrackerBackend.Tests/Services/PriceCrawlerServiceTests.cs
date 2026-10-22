@@ -1,3 +1,4 @@
+using ePriTrackerBackend.Models.Entities;
 using ePriTrackerBackend.Repositories;
 using ePriTrackerBackend.Scraping.Abstractions;
 using ePriTrackerBackend.Services;
@@ -12,6 +13,30 @@ namespace ePriTrackerBackend.Tests.Services
         private readonly FakePlatformScraper _scraper = new();
 
         public void Dispose() => _db.Dispose();
+
+        private PriceCrawlerService Job()
+        {
+            var ctx = _db.Context;
+            return new PriceCrawlerService(new ProductRepository(ctx), new PriceHistoryRepository(ctx), new EfUnitOfWork(ctx),
+                new SingleScraperResolver(_scraper), NullLogger<PriceCrawlerService>.Instance);
+        }
+
+        /// <summary>Một sản phẩm đang được theo dõi (link sàn giả "fake.vn").</summary>
+        private Product Tracked(string id, decimal price, bool inStock = true)
+        {
+            var user = _db.Context.User.FirstOrDefault() ?? _db.AddUser("u@test.vn");
+            var product = _db.AddProduct(FakePlatformScraper.Normalized(id), price: price);
+            if (!inStock)
+            {
+                product.IsInStock = false;
+                product.OutOfStockSince = DateTimeOffset.UtcNow.AddDays(-3);
+                _db.Context.SaveChanges();
+            }
+            _db.Track(user, product);
+            return product;
+        }
+
+        private Product Reload(Product p) => _db.Fresh().Product.Single(x => x.ProductId == p.ProductId);
 
         [Fact]
         public async Task UpdatesOnlyChangedPrices_AddsHistory_SkipsUntrackedAndFailed()
@@ -28,21 +53,123 @@ namespace ePriTrackerBackend.Tests.Services
             _scraper.Products[FakePlatformScraper.Normalized("2")] = new ScrapedProduct { Price = 500 };
             _scraper.Products[FakePlatformScraper.Normalized("5")] = new ScrapedProduct { Price = 1 };
 
-            var ctx = _db.Context;
-            var job = new PriceCrawlerService(new ProductRepository(ctx), new PriceHistoryRepository(ctx), new EfUnitOfWork(ctx),
-                new SingleScraperResolver(_scraper), NullLogger<PriceCrawlerService>.Instance);
-
-            await job.UpdateAllTrackedProductPricesAsync();
+            await Job().UpdateAllTrackedProductPricesAsync();
 
             using var fresh = _db.Fresh();
             Assert.Equal(900m, fresh.Product.Single(p => p.ProductId == changed.ProductId).LatestPrice);
             Assert.Equal(1000m, fresh.Product.Single(p => p.ProductId == changed.ProductId).InitialPrice);
             Assert.Equal(50m, fresh.Product.Single(p => p.ProductId == untracked.ProductId).LatestPrice);
+            Assert.All(fresh.Product, p => Assert.True(p.IsInStock)); // lỗi mạng / sàn lạ không bị coi là hết hàng
 
             var history = Assert.Single(fresh.PriceHistory);
             Assert.Equal(changed.ProductId, history.ProductId);
             Assert.Equal(900m, history.Price);
             Assert.DoesNotContain(FakePlatformScraper.Normalized("5"), _scraper.RequestedUrls);
+        }
+
+        [Theory]
+        [InlineData(false, 16390000)] // sàn báo hết hàng nhưng vẫn hiện giá
+        [InlineData(null, null)]      // sàn không có giá (CellphoneS trả 0 → null)
+        [InlineData(false, null)]
+        public async Task OutOfStock_KeepsLatestPrice_FlagsProduct_NoHistory(bool? available, int? price)
+        {
+            var product = Tracked("1", 20000000);
+            _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { Price = price, IsAvailable = available };
+            var before = DateTimeOffset.UtcNow.AddSeconds(-1);
+
+            await Job().UpdateAllTrackedProductPricesAsync();
+
+            var stored = Reload(product);
+            Assert.False(stored.IsInStock);
+            Assert.True(stored.OutOfStockSince >= before);
+            Assert.Equal(20000000m, stored.LatestPrice); // giữ giá gần nhất
+            Assert.Empty(_db.Fresh().PriceHistory);
+            Assert.Single(_db.Fresh().Item);             // không tự bỏ theo dõi
+        }
+
+        [Fact]
+        public async Task StillOutOfStock_KeepsOriginalOutOfStockSince()
+        {
+            var product = Tracked("1", 1000, inStock: false);
+            var since = Reload(product).OutOfStockSince;
+            _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { Price = 900, IsAvailable = false };
+
+            await Job().UpdateAllTrackedProductPricesAsync();
+
+            var stored = Reload(product);
+            Assert.False(stored.IsInStock);
+            Assert.Equal(since, stored.OutOfStockSince);
+            Assert.Equal(1000m, stored.LatestPrice);
+        }
+
+        [Fact]
+        public async Task BackInStock_ClearsFlag_AndUpdatesPrice()
+        {
+            var product = Tracked("1", 1000, inStock: false);
+            _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { Price = 950, IsAvailable = true };
+
+            await Job().UpdateAllTrackedProductPricesAsync();
+
+            var stored = Reload(product);
+            Assert.True(stored.IsInStock);
+            Assert.Null(stored.OutOfStockSince);
+            Assert.Equal(950m, stored.LatestPrice);
+            Assert.Equal(950m, Assert.Single(_db.Fresh().PriceHistory).Price);
+        }
+
+        [Fact]
+        public async Task BackInStock_SamePrice_ClearsFlag_WithoutHistory()
+        {
+            var product = Tracked("1", 1000, inStock: false);
+            _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { Price = 1000 };
+
+            await Job().UpdateAllTrackedProductPricesAsync();
+
+            Assert.True(Reload(product).IsInStock);
+            Assert.Empty(_db.Fresh().PriceHistory);
+        }
+
+        [Fact]
+        public async Task NewDescription_IsSanitizedAndSaved_WithoutPriceHistory()
+        {
+            var product = Tracked("1", 1000);
+            _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct
+            {
+                Price = 1000,
+                Description = "<p style=\"color:red\">Bài viết đầy đủ</p><script>alert(1)</script>"
+            };
+
+            await Job().UpdateAllTrackedProductPricesAsync();
+
+            Assert.Equal("<p>Bài viết đầy đủ</p>", Reload(product).Description);
+            Assert.Empty(_db.Fresh().PriceHistory);
+        }
+
+        [Fact]
+        public async Task MissingDescription_KeepsStoredOne()
+        {
+            var product = Tracked("1", 1000);
+            product.Description = "<p>Mô tả cũ</p>";
+            _db.Context.SaveChanges();
+            _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { Price = 1000 };
+
+            await Job().UpdateAllTrackedProductPricesAsync();
+
+            Assert.Equal("<p>Mô tả cũ</p>", Reload(product).Description);
+        }
+
+        [Fact]
+        public async Task ProductAddedWithoutPrice_FirstRealPriceBecomesInitialPrice()
+        {
+            var product = Tracked("1", 0, inStock: false);
+            _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { Price = 4890000, IsAvailable = true };
+
+            await Job().UpdateAllTrackedProductPricesAsync();
+
+            var stored = Reload(product);
+            Assert.Equal(4890000m, stored.InitialPrice);
+            Assert.Equal(4890000m, stored.LatestPrice);
+            Assert.True(stored.IsInStock);
         }
     }
 }

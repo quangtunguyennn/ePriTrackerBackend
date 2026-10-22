@@ -72,17 +72,48 @@ namespace ePriTrackerBackend.Tests.Services
             Assert.Equal("Sản phẩm không xác định", product.ProductName);
             Assert.Equal(0m, product.InitialPrice);
             Assert.Equal("", product.ImageURL);
+            Assert.False(product.IsInStock); // không có giá → tính là hết hàng, vẫn cho theo dõi
+            Assert.NotNull(product.OutOfStockSince);
+            Assert.Single(_db.Fresh().Item);
+        }
+
+        [Fact]
+        public async Task AddProduct_OutOfStockWithPrice_IsTracked_KeepsShownPrice()
+        {
+            _db.AddUser("u@test.vn");
+            _scraper.Products[FakePlatformScraper.Normalized("8")] = new ScrapedProduct { Name = "iPhone 15 Pro cũ", Price = 16390000, IsAvailable = false };
+
+            await _service.AddProductAsync("https://fake.vn/iphone-p8.html", "u@test.vn");
+
+            var product = _db.Fresh().Product.Single();
+            Assert.False(product.IsInStock);
+            Assert.Equal(16390000m, product.LatestPrice);
+            Assert.Equal(16390000m, product.InitialPrice);
+            Assert.Single(_db.Fresh().Item);
+        }
+
+        [Fact]
+        public async Task AddProduct_InStock_HasNoOutOfStockDate()
+        {
+            _db.AddUser("u@test.vn");
+
+            await _service.AddProductAsync("https://fake.vn/iphone-15-p123.html", "u@test.vn");
+
+            var product = _db.Fresh().Product.Single();
+            Assert.True(product.IsInStock);
+            Assert.Null(product.OutOfStockSince);
         }
 
         [Theory]
         [InlineData("https://other.vn/x-p123.html")]   // sàn chưa hỗ trợ
         [InlineData("https://fake.vn/khuyen-mai")]     // không có product ID
-        public async Task AddProduct_InvalidLink_ThrowsLegacyMessage(string link)
+        public async Task AddProduct_InvalidLink_ThrowsGenericMessage(string link)
         {
             _db.AddUser("u@test.vn");
 
             var ex = await Assert.ThrowsAsync<Exception>(() => _service.AddProductAsync(link, "u@test.vn"));
-            Assert.Equal("Link Tiki không hợp lệ. Không tìm thấy Product ID.", ex.Message);
+            // Câu chung cho mọi sàn (trước đây là "Link Tiki không hợp lệ..." – sai nghĩa khi có sàn thứ hai)
+            Assert.Equal("Link sản phẩm không hợp lệ hoặc sàn chưa được hỗ trợ.", ex.Message);
         }
 
         [Fact]
@@ -117,20 +148,61 @@ namespace ePriTrackerBackend.Tests.Services
         }
 
         [Fact]
-        public async Task TrackDeal_CreatesProductFromDeal_ThenReportsAlreadyTracking()
+        public async Task TrackDeal_NormalizesLink_UsesRegularPriceFromProductPage_ThenReportsAlreadyTracking()
         {
             var user = _db.AddUser("u@test.vn");
-            var deal = new TrackDealDto { ProductLink = "https://fake.vn/sua-p5.html?spid=1", ProductName = "Sữa", CurrentPrice = 90000, ImageURL = "s.jpg" };
+            // Giá flash sale 15tr – trang sản phẩm (giá bán thường) là 20tr
+            var deal = new TrackDealDto { ProductLink = "https://fake.vn/iphone-p123.html?spid=1", ProductName = "iPhone", CurrentPrice = 15000000, ImageURL = "s.jpg" };
 
             Assert.Equal(TrackDealResult.Added, await _service.TrackDealAsync(user.UserId, deal));
             Assert.Equal(TrackDealResult.AlreadyTracking, await _service.TrackDealAsync(user.UserId, deal));
 
             using var fresh = _db.Fresh();
             var product = fresh.Product.Single();
-            Assert.Equal(deal.ProductLink, product.ProductLink); // deal giữ nguyên link gốc, không chuẩn hoá
-            Assert.Equal(90000m, product.InitialPrice);
+            Assert.Equal(FakePlatformScraper.Normalized("123"), product.ProductLink); // cùng link với khi thêm bằng tay → không trùng
+            Assert.Equal(20000000m, product.InitialPrice);
+            Assert.Equal("iPhone 15", product.ProductName);
             Assert.Single(fresh.Item);
-            Assert.Empty(_scraper.RequestedUrls); // không cào lại
+        }
+
+        [Fact]
+        public async Task TrackDeal_SameProductAddedManually_ReusesIt()
+        {
+            var user = _db.AddUser("u@test.vn");
+            var other = _db.AddUser("o@test.vn");
+            await _service.AddProductAsync("https://fake.vn/iphone-p123.html", "o@test.vn");
+
+            await _service.TrackDealAsync(user.UserId, new TrackDealDto { ProductLink = "https://fake.vn/x-p123.html?itm=1", ProductName = "iPhone", CurrentPrice = 1 });
+
+            using var fresh = _db.Fresh();
+            Assert.Single(fresh.Product);
+            Assert.Equal(2, fresh.Item.Count());
+        }
+
+        [Fact]
+        public async Task TrackDeal_ScrapeFails_FallsBackToDealInfo()
+        {
+            var user = _db.AddUser("u@test.vn");
+            var deal = new TrackDealDto { ProductLink = "https://fake.vn/sua-p5.html?spid=1", ProductName = "Sữa", CurrentPrice = 90000, ImageURL = "s.jpg" };
+
+            Assert.Equal(TrackDealResult.Added, await _service.TrackDealAsync(user.UserId, deal)); // scraper giả không có p5 → lỗi
+
+            var product = _db.Fresh().Product.Single();
+            Assert.Equal(FakePlatformScraper.Normalized("5"), product.ProductLink);
+            Assert.Equal("Sữa", product.ProductName);
+            Assert.Equal(90000m, product.InitialPrice);
+        }
+
+        [Fact]
+        public async Task TrackDeal_UnsupportedLink_Throws()
+        {
+            var user = _db.AddUser("u@test.vn");
+
+            var ex = await Assert.ThrowsAsync<Exception>(() => _service.TrackDealAsync(user.UserId,
+                new TrackDealDto { ProductLink = "https://shopee.vn/abc", ProductName = "x", CurrentPrice = 1 }));
+
+            Assert.Equal(ProductTrackingService.InvalidLinkMessage, ex.Message);
+            Assert.Empty(_db.Fresh().Product);
         }
 
         [Fact]
