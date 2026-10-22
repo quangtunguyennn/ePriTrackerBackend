@@ -9,7 +9,7 @@ namespace ePriTrackerBackend.Scraping.Tiki
     /// Strategy cho sàn Tiki: lấy chi tiết/tìm kiếm sản phẩm qua API (Hybrid: HttpClient → Playwright)
     /// và quét trang sự kiện khuyến mãi (Playwright).
     /// </summary>
-    public class TikiScraper : IPlatformScraper, IEventScraper
+    public class TikiScraper : ISearchablePlatformScraper, IEventScraper
     {
         public const string PlatformName = "Tiki";
 
@@ -58,9 +58,21 @@ namespace ePriTrackerBackend.Scraping.Tiki
                 OriginalPrice = GetDecimal(root, "original_price"),
                 ImageUrl = GetString(root, "thumbnail_url"),
                 Description = GetString(root, "description"),
-                Url = TikiUrlParser.NormalizeProductUrl(productId)
+                Url = TikiUrlParser.NormalizeProductUrl(productId),
+                IsAvailable = ParseInventoryStatus(GetString(root, "inventory_status"))
             };
         }
+
+        /// <summary>
+        /// inventory_status của API chi tiết Tiki. "upcoming" (sắp về hàng) cũng tính là hết hàng – đã thống nhất với nhóm.
+        /// Giá trị lạ / không có → null (không kết luận, để quy tắc dựa vào giá).
+        /// </summary>
+        public static bool? ParseInventoryStatus(string status) => status?.Trim().ToLowerInvariant() switch
+        {
+            "available" => true,
+            "out_of_stock" or "discontinue" or "discontinued" or "upcoming" => false,
+            _ => null
+        };
 
         public async Task<IReadOnlyList<ScrapedProduct>> SearchAsync(string keyword, int limit, FetchOptions options = null, CancellationToken cancellationToken = default)
         {

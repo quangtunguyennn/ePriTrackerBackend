@@ -17,6 +17,13 @@ namespace ePriTrackerBackend.Scraping.Abstractions
         public string Description { get; init; }
         /// <summary>Link đầy đủ tới trang sản phẩm. Chuỗi rỗng khi không có.</summary>
         public string Url { get; init; }
+        /// <summary>Sàn báo còn hàng (true) / hết hàng (false). Null khi sàn không cho biết.</summary>
+        public bool? IsAvailable { get; init; }
+
+        /// <summary>
+        /// Mua được ngay: có giá VÀ sàn không báo hết hàng. Không có giá (sàn trả 0 / thiếu giá) cũng tính là hết hàng.
+        /// </summary>
+        public bool IsInStock => Price > 0 && IsAvailable != false;
     }
 
     /// <summary>
@@ -28,5 +35,11 @@ namespace ePriTrackerBackend.Scraping.Abstractions
         public string Title { get; init; }
         public string Url { get; init; }
         public string ImageUrl { get; init; }
+
+        /// <summary>Thời điểm kết thúc nếu sàn cho biết (vd khung giờ flash sale).</summary>
+        public DateTimeOffset? EndsAt { get; init; }
+
+        /// <summary>Sản phẩm đọc được cùng lúc với sự kiện (nguồn tự đăng). Rỗng khi phải cào riêng từng trang sự kiện (Tiki).</summary>
+        public IReadOnlyList<ScrapedProduct> Products { get; init; } = Array.Empty<ScrapedProduct>();
     }
 }

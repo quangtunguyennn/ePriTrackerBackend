@@ -82,7 +82,7 @@ namespace ePriTrackerBackend.Tests.Helpers
             Context.SaveChanges();
         }
 
-        public Event AddEvent(string title, string link, bool published = true, DateTime? createdAt = null)
+        public Event AddEvent(string title, string link, bool published = true, DateTime? createdAt = null, string platform = "Tiki", DateTimeOffset? endsAt = null)
         {
             var evt = new Event
             {
@@ -91,7 +91,9 @@ namespace ePriTrackerBackend.Tests.Helpers
                 EventLink = link,
                 ImageUrl = "e.jpg",
                 IsPublished = published,
-                CreatedAt = createdAt ?? DateTime.UtcNow
+                CreatedAt = createdAt ?? DateTime.UtcNow,
+                Platform = platform,
+                EndsAt = endsAt
             };
             Context.Event.Add(evt);
             Context.SaveChanges();

@@ -13,7 +13,10 @@ namespace ePriTrackerBackend.Scraping.Core
         public PlatformScraperResolver(IEnumerable<IPlatformScraper> scrapers)
         {
             _scrapers = scrapers?.ToList() ?? throw new ArgumentNullException(nameof(scrapers));
+            SearchablePlatforms = _scrapers.OfType<ISearchablePlatformScraper>().ToList();
         }
+
+        public IReadOnlyList<ISearchablePlatformScraper> SearchablePlatforms { get; }
 
         public bool TryResolve(string productUrl, out IPlatformScraper scraper)
         {

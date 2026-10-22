@@ -2,7 +2,11 @@ using ePriTrackerBackend.Controllers;
 using ePriTrackerBackend.Extensions;
 using ePriTrackerBackend.Models.Context;
 using ePriTrackerBackend.Scraping;
+using ePriTrackerBackend.Scraping.Abstractions;
+using ePriTrackerBackend.Scraping.CellphoneS;
+using ePriTrackerBackend.Scraping.Tiki;
 using ePriTrackerBackend.Services;
+using ePriTrackerBackend.Services.Events;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -50,6 +54,21 @@ namespace ePriTrackerBackend.Tests
             Assert.IsType<PriceCrawlerService>(sp.GetRequiredService<IPriceCrawlerService>());
             Assert.IsType<SuggestionCrawlService>(sp.GetRequiredService<ISuggestionsCrawlerService>());
             Assert.IsType<EventCacheService>(sp.GetRequiredService<IEventCacheService>());
+            Assert.IsType<AutoEventSyncService>(sp.GetRequiredService<IAutoEventSyncService>());
+
+            // Sự kiện: Tiki do Admin quản lý, CellphoneS tự đăng
+            Assert.Equal(TikiScraper.PlatformName, sp.GetRequiredService<IEventScraper>().Platform);
+            Assert.Equal(new[] { CellphoneSScraper.PlatformName }, sp.GetServices<IAutoEventSource>().Select(s => s.Platform));
+
+            // Thêm sàn mới không phải sửa service: resolver tự chọn đúng strategy theo link
+            var resolver = sp.GetRequiredService<IPlatformScraperResolver>();
+            Assert.True(resolver.TryResolve("https://tiki.vn/a-p1.html", out var tiki));
+            Assert.IsType<TikiScraper>(tiki);
+            Assert.True(resolver.TryResolve("https://cellphones.com.vn/iphone-17-256gb.html", out var cps));
+            Assert.IsType<CellphoneSScraper>(cps);
+
+            // Chỉ Tiki là nguồn gợi ý (CellphoneS cấm trang tìm kiếm)
+            Assert.Equal(new[] { TikiScraper.PlatformName }, resolver.SearchablePlatforms.Select(p => p.Platform));
         }
 
         [Fact]
@@ -59,6 +78,7 @@ namespace ePriTrackerBackend.Tests
             Assert.Equal("ePriTrackerBackend.Services.IPriceCrawlerService", typeof(IPriceCrawlerService).FullName);
             Assert.Equal("ePriTrackerBackend.Services.ISuggestionsCrawlerService", typeof(ISuggestionsCrawlerService).FullName);
             Assert.Equal("ePriTrackerBackend.Services.IEventCacheService", typeof(IEventCacheService).FullName);
+            Assert.Equal("ePriTrackerBackend.Services.Events.IAutoEventSyncService", typeof(IAutoEventSyncService).FullName);
         }
     }
 }

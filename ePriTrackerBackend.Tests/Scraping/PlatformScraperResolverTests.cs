@@ -15,14 +15,32 @@ namespace ePriTrackerBackend.Tests.Scraping
             public bool CanHandle(string productUrl) => productUrl.Contains(_host);
             public bool TryNormalizeProductUrl(string productUrl, out string normalizedUrl) { normalizedUrl = productUrl; return true; }
             public Task<ScrapedProduct> GetProductAsync(string productUrl, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        }
+
+        /// <summary>Strategy giả có thêm khả năng tìm kiếm.</summary>
+        private sealed class SearchableFakeScraper : ISearchablePlatformScraper
+        {
+            private readonly FakeScraper _inner;
+            public SearchableFakeScraper(string platform, string host) => _inner = new FakeScraper(platform, host);
+
+            public string Platform => _inner.Platform;
+            public bool CanHandle(string productUrl) => _inner.CanHandle(productUrl);
+            public bool TryNormalizeProductUrl(string productUrl, out string normalizedUrl) => _inner.TryNormalizeProductUrl(productUrl, out normalizedUrl);
+            public Task<ScrapedProduct> GetProductAsync(string productUrl, CancellationToken cancellationToken = default) => throw new NotSupportedException();
             public Task<IReadOnlyList<ScrapedProduct>> SearchAsync(string keyword, int limit, FetchOptions? options = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         }
 
         private static readonly PlatformScraperResolver Resolver = new(new IPlatformScraper[]
         {
-            new FakeScraper("Tiki", "tiki.vn"),
+            new SearchableFakeScraper("Tiki", "tiki.vn"),
             new FakeScraper("Shopee", "shopee.vn")
         });
+
+        [Fact]
+        public void SearchablePlatforms_OnlyThoseWithSearch()
+        {
+            Assert.Equal(new[] { "Tiki" }, Resolver.SearchablePlatforms.Select(s => s.Platform));
+        }
 
         [Theory]
         [InlineData("https://tiki.vn/a-p1.html", "Tiki")]

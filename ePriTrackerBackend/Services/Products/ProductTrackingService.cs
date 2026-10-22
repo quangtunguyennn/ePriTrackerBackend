@@ -30,6 +30,9 @@ namespace ePriTrackerBackend.Services.Products
 
     public class ProductTrackingService : IProductTrackingService
     {
+        /// <summary>Thông báo khi link không thuộc sàn nào được hỗ trợ hoặc không chứa mã sản phẩm (dùng chung mọi sàn).</summary>
+        public const string InvalidLinkMessage = "Link sản phẩm không hợp lệ hoặc sàn chưa được hỗ trợ.";
+
         private static readonly Regex CampaignCodeRegex = new Regex(@"itm_campaign=([^&]+)", RegexOptions.Compiled);
 
         private readonly IUserRepository _users;
@@ -76,8 +79,8 @@ namespace ePriTrackerBackend.Services.Products
             if (!_scrapers.TryResolve(productLink, out var scraper)
                 || !scraper.TryNormalizeProductUrl(productLink, out var normalizedLink))
             {
-                _logger.LogWarning("Link Tiki không hợp lệ: {ProductLink}", productLink);
-                throw new Exception("Link Tiki không hợp lệ. Không tìm thấy Product ID."); // Giữ nguyên message cũ – FE hiển thị câu này
+                _logger.LogWarning("Link sản phẩm không hợp lệ hoặc sàn chưa hỗ trợ: {ProductLink}", productLink);
+                throw new Exception(InvalidLinkMessage); // FE hiển thị nguyên văn câu này
             }
 
             var product = await _products.FindByLinkAsync(normalizedLink);
@@ -103,25 +106,20 @@ namespace ePriTrackerBackend.Services.Products
 
         public async Task<TrackDealResult> TrackDealAsync(Guid userId, TrackDealDto deal)
         {
-            // Deal lấy từ trang sự kiện đã có đủ thông tin → không cần cào lại, lưu nguyên link gốc
-            var product = await _products.FindByLinkAsync(deal.ProductLink);
+            // Chuẩn hoá link như khi thêm bằng tay → không sinh 2 bản ghi cho cùng một sản phẩm
+            if (!_scrapers.TryResolve(deal.ProductLink, out var scraper)
+                || !scraper.TryNormalizeProductUrl(deal.ProductLink, out var normalizedLink))
+            {
+                _logger.LogWarning("Link deal không hợp lệ hoặc sàn chưa hỗ trợ: {ProductLink}", deal.ProductLink);
+                throw new Exception(InvalidLinkMessage);
+            }
+
+            var product = await _products.FindByLinkAsync(normalizedLink);
             if (product == null)
             {
-                product = new Product
-                {
-                    ProductId = Guid.NewGuid(),
-                    ProductName = deal.ProductName,
-                    ProductLink = deal.ProductLink,
-                    ImageURL = deal.ImageURL,
-
-                    // Khi mới thêm vào, Giá khởi điểm và Giá mới nhất đều bằng giá hiện tại
-                    InitialPrice = deal.CurrentPrice,
-                    LatestPrice = deal.CurrentPrice,
-
-                    AddedAt = DateTime.UtcNow,
-                    LastUpdatedAt = DateTimeOffset.UtcNow
-                };
-
+                // Lấy giá BÁN THƯỜNG từ trang sản phẩm: giá deal (vd flash sale) chỉ tồn tại vài giờ – lưu làm giá ban đầu
+                // thì lần cập nhật sau trông như tăng giá. Cào lỗi → đành dùng thông tin của deal.
+                product = await TryScrapeNewProductAsync(scraper, normalizedLink) ?? ProductFromDeal(deal, normalizedLink);
                 _products.Add(product);
                 await _unitOfWork.SaveChangesAsync();
             }
@@ -171,22 +169,54 @@ namespace ePriTrackerBackend.Services.Products
             return user != null && await _trackedItems.ExistsAsync(user.UserId, productId);
         }
 
+        private async Task<Product> TryScrapeNewProductAsync(IPlatformScraper scraper, string normalizedLink)
+        {
+            try
+            {
+                return await ScrapeNewProductAsync(scraper, normalizedLink);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Không cào được {Url} khi theo dõi deal, dùng thông tin của deal: {Message}", normalizedLink, ex.Message);
+                return null;
+            }
+        }
+
+        private static Product ProductFromDeal(TrackDealDto deal, string normalizedLink) => new Product
+        {
+            ProductId = Guid.NewGuid(),
+            ProductName = deal.ProductName,
+            ProductLink = normalizedLink,
+            ImageURL = deal.ImageURL,
+
+            // Khi mới thêm vào, Giá khởi điểm và Giá mới nhất đều bằng giá hiện tại
+            InitialPrice = deal.CurrentPrice,
+            LatestPrice = deal.CurrentPrice,
+
+            AddedAt = DateTime.UtcNow,
+            LastUpdatedAt = DateTimeOffset.UtcNow
+        };
+
         private static async Task<Product> ScrapeNewProductAsync(IPlatformScraper scraper, string normalizedLink)
         {
             // Bên trong scraper là Dual-Layer: HttpClient → Playwright
             var scraped = await scraper.GetProductAsync(normalizedLink);
-            decimal price = scraped.Price ?? 0;
+            decimal price = scraped.Price ?? 0; // Hết hàng mà sàn vẫn hiện giá → lưu giá đó; không có giá → 0 (job sẽ điền khi có hàng)
+            var now = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7));
 
             return new Product
             {
                 ProductLink = normalizedLink,
                 ProductName = scraped.Name ?? "Sản phẩm không xác định",
                 ImageURL = scraped.ImageUrl ?? "",
-                Description = scraped.Description ?? "",
+                Description = ProductDescription.Sanitize(scraped.Description),
                 InitialPrice = price,
                 AddedAt = DateTime.UtcNow,
                 LatestPrice = price,
-                LastUpdatedAt = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7))
+                LastUpdatedAt = now,
+                // Vẫn cho thêm sản phẩm đang hết hàng – người dùng chờ hàng về
+                IsInStock = scraped.IsInStock,
+                OutOfStockSince = scraped.IsInStock ? null : now
             };
         }
 

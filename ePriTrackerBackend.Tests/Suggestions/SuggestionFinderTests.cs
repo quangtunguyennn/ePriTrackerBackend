@@ -1,23 +1,34 @@
 using ePriTrackerBackend.Models.Entities;
 using ePriTrackerBackend.Scraping.Abstractions;
 using ePriTrackerBackend.Services.Suggestions;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ePriTrackerBackend.Tests.Suggestions
 {
     public class SuggestionFinderTests
     {
-        private sealed class FakeScraper : IPlatformScraper
+        /// <summary>Sàn giả có tìm kiếm: nhận link bắt đầu bằng <c>prefix</c>; chuẩn hoá link = bỏ query.</summary>
+        private sealed class SearchableFake : ISearchablePlatformScraper
         {
-            private readonly IReadOnlyList<ScrapedProduct> _results;
-            public FakeScraper(params ScrapedProduct[] results) => _results = results;
+            private readonly string _prefix;
+            private readonly Func<IReadOnlyList<ScrapedProduct>> _search;
+
+            public SearchableFake(string platform, string prefix, params ScrapedProduct[] results) : this(platform, prefix, () => results) { }
+
+            public SearchableFake(string platform, string prefix, Func<IReadOnlyList<ScrapedProduct>> search)
+            {
+                Platform = platform;
+                _prefix = prefix;
+                _search = search;
+            }
 
             public string? LastKeyword { get; private set; }
             public int LastLimit { get; private set; }
             public FetchOptions? LastOptions { get; private set; }
 
-            public string Platform => "Fake";
-            public bool CanHandle(string productUrl) => productUrl.StartsWith("https://fake/");
-            public bool TryNormalizeProductUrl(string productUrl, out string normalizedUrl) { normalizedUrl = productUrl; return true; }
+            public string Platform { get; }
+            public bool CanHandle(string productUrl) => productUrl.StartsWith(_prefix);
+            public bool TryNormalizeProductUrl(string productUrl, out string normalizedUrl) { normalizedUrl = productUrl.Split('?')[0]; return true; }
             public Task<ScrapedProduct> GetProductAsync(string productUrl, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
             public Task<IReadOnlyList<ScrapedProduct>> SearchAsync(string keyword, int limit, FetchOptions? options = null, CancellationToken cancellationToken = default)
@@ -25,20 +36,35 @@ namespace ePriTrackerBackend.Tests.Suggestions
                 LastKeyword = keyword;
                 LastLimit = limit;
                 LastOptions = options;
-                return Task.FromResult(_results);
+                return Task.FromResult(_search());
             }
         }
 
-        private sealed class SingleResolver : IPlatformScraperResolver
+        /// <summary>Sàn giả KHÔNG có tìm kiếm (giống CellphoneS).</summary>
+        private sealed class NonSearchableFake : IPlatformScraper
         {
-            private readonly IPlatformScraper _scraper;
-            public SingleResolver(IPlatformScraper scraper) => _scraper = scraper;
+            public string Platform => "NoSearch";
+            public bool CanHandle(string productUrl) => productUrl.StartsWith("https://nosearch/");
+            public bool TryNormalizeProductUrl(string productUrl, out string normalizedUrl) { normalizedUrl = productUrl; return true; }
+            public Task<ScrapedProduct> GetProductAsync(string productUrl, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        }
+
+        private sealed class Resolver : IPlatformScraperResolver
+        {
+            private readonly IReadOnlyList<IPlatformScraper> _scrapers;
+            public Resolver(params IPlatformScraper[] scrapers) => _scrapers = scrapers;
+
             public bool TryResolve(string productUrl, out IPlatformScraper scraper)
             {
-                scraper = _scraper.CanHandle(productUrl) ? _scraper : null!;
+                scraper = _scrapers.FirstOrDefault(s => s.CanHandle(productUrl))!;
                 return scraper != null;
             }
+
+            public IReadOnlyList<ISearchablePlatformScraper> SearchablePlatforms => _scrapers.OfType<ISearchablePlatformScraper>().ToList();
         }
+
+        private static SuggestionFinder Finder(params IPlatformScraper[] scrapers)
+            => new(new Resolver(scrapers), new SuggestionMatcher(), NullLogger<SuggestionFinder>.Instance);
 
         private static Product Original(string link = "https://fake/p1", decimal initialPrice = 1000) => new()
         {
@@ -49,18 +75,20 @@ namespace ePriTrackerBackend.Tests.Suggestions
             InitialPrice = initialPrice
         };
 
+        private static ScrapedProduct Candidate(string name, decimal? price, string url) => new() { Name = name, Price = price, Url = url };
+
         [Fact]
-        public async Task SearchesSamePlatform_FiltersByNameAndPrice_AndMapsEntity()
+        public async Task FiltersByNameAndPrice_AndMapsEntity()
         {
-            var scraper = new FakeScraper(
+            var scraper = new SearchableFake("Fake", "https://fake/",
                 new ScrapedProduct { Name = "Tai nghe Sony WH-1000XM4", Price = 800, ImageUrl = "x.jpg", Url = "https://fake/x" }, // giữ
-                new ScrapedProduct { Name = "Tai nghe Sony giá rẻ", Price = 100, Url = "https://fake/y" },                     // < 40% → loại
-                new ScrapedProduct { Name = "Tai nghe Sony bản cao cấp", Price = 1500, Url = "https://fake/z" },               // đắt hơn → loại
-                new ScrapedProduct { Name = "Loa Bluetooth Sony", Price = 500, Url = "https://fake/w" });                     // khác loại → loại
+                Candidate("Tai nghe Sony giá rẻ", 100, "https://fake/y"),                                                        // < 40% → loại
+                Candidate("Tai nghe Sony bản cao cấp", 1500, "https://fake/z"),                                                  // đắt hơn → loại
+                Candidate("Loa Bluetooth Sony", 500, "https://fake/w"));                                                         // khác loại → loại
             var options = new FetchOptions { Timeout = TimeSpan.FromSeconds(5) };
             var original = Original();
 
-            var suggestions = await new SuggestionFinder(new SingleResolver(scraper), new SuggestionMatcher()).FindAsync(original, options);
+            var suggestions = await Finder(scraper).FindAsync(original, options);
 
             Assert.Equal("tai nghe bluetooth sony wh", scraper.LastKeyword);
             Assert.Equal(10, scraper.LastLimit);
@@ -80,9 +108,9 @@ namespace ePriTrackerBackend.Tests.Suggestions
         public async Task NullFieldsFromScraper_GetEmptyDefaults()
         {
             // Giá gốc = 0 → không lọc theo giá; ứng viên thiếu ảnh/link vẫn được giữ với chuỗi rỗng (như code cũ)
-            var scraper = new FakeScraper(new ScrapedProduct { Name = "Tai nghe Sony", Price = null });
+            var scraper = new SearchableFake("Fake", "https://fake/", new ScrapedProduct { Name = "Tai nghe Sony", Price = null });
 
-            var s = Assert.Single(await new SuggestionFinder(new SingleResolver(scraper), new SuggestionMatcher()).FindAsync(Original(initialPrice: 0)));
+            var s = Assert.Single(await Finder(scraper).FindAsync(Original(initialPrice: 0)));
 
             Assert.Equal(0m, s.Price);
             Assert.Equal("", s.ImageURL);
@@ -92,23 +120,95 @@ namespace ePriTrackerBackend.Tests.Suggestions
         [Fact]
         public async Task UnsupportedPlatform_ReturnsEmpty_WithoutSearching()
         {
-            var scraper = new FakeScraper(new ScrapedProduct { Name = "Tai nghe Sony", Price = 800 });
+            var scraper = new SearchableFake("Fake", "https://fake/", Candidate("Tai nghe Sony", 800, "https://fake/x"));
 
-            var result = await new SuggestionFinder(new SingleResolver(scraper), new SuggestionMatcher()).FindAsync(Original(link: "https://other/p1"));
-
-            Assert.Empty(result);
+            Assert.Empty(await Finder(scraper).FindAsync(Original(link: "https://other/p1")));
             Assert.Null(scraper.LastKeyword);
         }
 
         [Fact]
         public async Task EmptyKeyword_ReturnsEmpty_WithoutSearching()
         {
-            var scraper = new FakeScraper();
+            var scraper = new SearchableFake("Fake", "https://fake/");
             var product = Original();
             product.ProductName = "Chính hãng - Freeship"; // chỉ toàn từ quảng cáo → từ khoá rỗng
 
-            Assert.Empty(await new SuggestionFinder(new SingleResolver(scraper), new SuggestionMatcher()).FindAsync(product));
+            Assert.Empty(await Finder(scraper).FindAsync(product));
             Assert.Null(scraper.LastKeyword);
+        }
+
+        [Fact]
+        public async Task MergesAllSearchablePlatforms_CheapestFirst()
+        {
+            var a = new SearchableFake("A", "https://a/", Candidate("Tai nghe Sony A", 900, "https://a/1"), Candidate("Tai nghe Sony A2", 600, "https://a/2"));
+            var b = new SearchableFake("B", "https://b/", Candidate("Tai nghe Sony B", 700, "https://b/1"));
+
+            var result = await Finder(a, b).FindAsync(Original(link: "https://a/p1"));
+
+            Assert.Equal(new[] { 600m, 700m, 900m }, result.Select(s => s.Price));
+        }
+
+        [Fact]
+        public async Task ProductOnNonSearchablePlatform_GetsSuggestionsFromOtherPlatforms()
+        {
+            // Sản phẩm CellphoneS (không tìm kiếm được) → gợi ý lấy từ sàn có tìm kiếm (Tiki)
+            var tiki = new SearchableFake("Tiki", "https://fake/", Candidate("Tai nghe Sony WH-1000XM4", 800, "https://fake/x"));
+
+            var result = await Finder(new NonSearchableFake(), tiki).FindAsync(Original(link: "https://nosearch/p1"));
+
+            Assert.Equal("https://fake/x", Assert.Single(result).ProductLink);
+        }
+
+        [Fact]
+        public async Task ExcludesTheOriginalProduct()
+        {
+            var scraper = new SearchableFake("Fake", "https://fake/",
+                Candidate("Tai nghe Bluetooth Sony WH-1000XM5", 1000, "https://fake/p1?spid=9"), // chính nó (khác query)
+                Candidate("Tai nghe Sony WH-1000XM4", 800, "https://fake/x"));
+
+            var result = await Finder(scraper).FindAsync(Original(link: "https://fake/p1"));
+
+            Assert.Equal("https://fake/x", Assert.Single(result).ProductLink);
+        }
+
+        [Fact]
+        public async Task KeepsAtMost20_Cheapest()
+        {
+            var many = Enumerable.Range(1, 25).Select(i => Candidate($"Tai nghe Sony {i}", 400 + i * 10, $"https://fake/{i}")).ToArray();
+
+            var result = await Finder(new SearchableFake("Fake", "https://fake/", many)).FindAsync(Original());
+
+            Assert.Equal(20, result.Count);
+            Assert.Equal(410m, result.First().Price);
+            Assert.Equal(600m, result.Last().Price);
+        }
+
+        [Fact]
+        public async Task OnePlatformFails_OthersStillReturned()
+        {
+            var broken = new SearchableFake("Broken", "https://broken/", () => throw new HttpRequestException("403"));
+            var ok = new SearchableFake("Ok", "https://fake/", Candidate("Tai nghe Sony WH-1000XM4", 800, "https://fake/x"));
+
+            var result = await Finder(broken, ok).FindAsync(Original());
+
+            Assert.Single(result);
+        }
+
+        [Fact]
+        public async Task AllPlatformsFail_ThrowsOriginalError_SoJobCanRetry()
+        {
+            var error = new HttpRequestException("403");
+            var broken = new SearchableFake("Broken", "https://fake/", () => throw error);
+
+            var thrown = await Assert.ThrowsAsync<HttpRequestException>(() => Finder(broken).FindAsync(Original()));
+
+            Assert.Same(error, thrown);
+        }
+
+        [Fact]
+        public async Task NoSearchablePlatforms_ReturnsEmpty()
+        {
+            Assert.Empty(await Finder(new NonSearchableFake()).FindAsync(Original(link: "https://nosearch/p1")));
         }
     }
 }

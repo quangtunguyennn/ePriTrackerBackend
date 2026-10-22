@@ -1,4 +1,4 @@
-using ePriTrackerBackend.Models.Entities;
+﻿using ePriTrackerBackend.Models.Entities;
 using ePriTrackerBackend.Repositories;
 using ePriTrackerBackend.Scraping.Abstractions;
 using ePriTrackerBackend.Services.Suggestions;
@@ -28,7 +28,7 @@ namespace ePriTrackerBackend.Tests.Services
         public SuggestionServiceTests()
         {
             var ctx = _db.Context;
-            _service = new SuggestionService(new ProductRepository(ctx), new SuggestionRepository(ctx), _finder, new EfUnitOfWork(ctx), NullLogger<SuggestionService>.Instance);
+            _service = new SuggestionService(new ProductRepository(ctx), new SuggestionRepository(ctx), _finder, new EfUnitOfWork(ctx), new SingleScraperResolver(new FakePlatformScraper()), NullLogger<SuggestionService>.Instance);
         }
 
         public void Dispose() => _db.Dispose();
@@ -37,6 +37,22 @@ namespace ePriTrackerBackend.Tests.Services
         {
             SuggestionProductId = Guid.NewGuid(), ProductId = product.ProductId, ProductName = name, Price = price, ImageURL = "i", ProductLink = "l"
         };
+
+        [Fact]
+        public async Task Dto_HasPlatform_DerivedFromLink()
+        {
+            var product = _db.AddProduct("https://fake.vn/a-p1.html");
+            var onFake = Suggestion(product, "A", 500);
+            onFake.ProductLink = "https://fake.vn/b-p2.html";
+            var unknown = Suggestion(product, "B", 600); // link "l" – không thuộc sàn nào
+            _db.Context.SuggestionProduct.AddRange(onFake, unknown);
+            _db.Context.SaveChanges();
+
+            var result = await _service.GetSuggestionsAsync(product.ProductId);
+
+            Assert.Equal("Fake", result.Single(s => s.ProductName == "A").Platform);
+            Assert.Null(result.Single(s => s.ProductName == "B").Platform);
+        }
 
         [Fact]
         public async Task Get_StoredSuggestions_ReturnedCheapestFirst_WithoutScraping()
