@@ -27,6 +27,9 @@ namespace ePriTrackerBackend.Tests.Scraping
                 Calls++;
                 return Failure != null ? Task.FromException<string>(Failure) : Task.FromResult(Html);
             }
+
+            public Task<string> RenderAsync(string url, PageRenderOptions options, CancellationToken cancellationToken = default)
+                => RenderAsync(url, cancellationToken);
         }
 
         private static string Card(string slug, string price, string original, string extra = "") =>

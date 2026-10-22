@@ -17,7 +17,7 @@ namespace ePriTrackerBackend.Tests.Services
         private PriceCrawlerService Job()
         {
             var ctx = _db.Context;
-            return new PriceCrawlerService(new ProductRepository(ctx), new PriceHistoryRepository(ctx), new EfUnitOfWork(ctx),
+            return new PriceCrawlerService(new ProductRepository(ctx), new PriceHistoryRepository(ctx), new TrackedItemRepository(ctx), new EfUnitOfWork(ctx),
                 new SingleScraperResolver(_scraper), NullLogger<PriceCrawlerService>.Instance);
         }
 
@@ -57,7 +57,7 @@ namespace ePriTrackerBackend.Tests.Services
 
             using var fresh = _db.Fresh();
             Assert.Equal(900m, fresh.Product.Single(p => p.ProductId == changed.ProductId).LatestPrice);
-            Assert.Equal(1000m, fresh.Product.Single(p => p.ProductId == changed.ProductId).InitialPrice);
+            Assert.Equal(1000m, fresh.Item.Single(i => i.ProductId == changed.ProductId).InitialPrice); // job không đổi giá ban đầu
             Assert.Equal(50m, fresh.Product.Single(p => p.ProductId == untracked.ProductId).LatestPrice);
             Assert.All(fresh.Product, p => Assert.True(p.IsInStock)); // lỗi mạng / sàn lạ không bị coi là hết hàng
 
@@ -185,7 +185,7 @@ namespace ePriTrackerBackend.Tests.Services
         private PriceCrawlerService Job(IPlatformScraper scraper)
         {
             var ctx = _db.Context;
-            return new PriceCrawlerService(new ProductRepository(ctx), new PriceHistoryRepository(ctx), new EfUnitOfWork(ctx),
+            return new PriceCrawlerService(new ProductRepository(ctx), new PriceHistoryRepository(ctx), new TrackedItemRepository(ctx), new EfUnitOfWork(ctx),
                 new SingleScraperResolver(scraper), NullLogger<PriceCrawlerService>.Instance);
         }
 
@@ -258,7 +258,7 @@ namespace ePriTrackerBackend.Tests.Services
             await Job().UpdateAllTrackedProductPricesAsync();
 
             var stored = Reload(product);
-            Assert.Equal(4890000m, stored.InitialPrice);
+            Assert.Equal(4890000m, _db.Fresh().Item.Single(i => i.ProductId == product.ProductId).InitialPrice);
             Assert.Equal(4890000m, stored.LatestPrice);
             Assert.True(stored.IsInStock);
         }

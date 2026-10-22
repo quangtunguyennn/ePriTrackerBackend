@@ -1,4 +1,5 @@
-﻿using ePriTrackerBackend.Models.Entities;
+﻿using ePriTrackerBackend.Models.DTOs;
+using ePriTrackerBackend.Models.Entities;
 using ePriTrackerBackend.Services.Products;
 using ePriTrackerBackend.Services.Suggestions;
 using ePriTrackerBackend.Services.YouTube;
@@ -58,13 +59,14 @@ namespace ePriTrackerBackend.Controllers
         // Endpoint: GET /product?id=...
         [HttpGet("/product")]
         [Authorize(Roles = "User, Admin")]
-        public async Task<ActionResult<Product>> GetById([FromQuery] Guid id)
+        public async Task<ActionResult<TrackedProductDTO>> GetById([FromQuery] Guid id)
         {
             var userEmail = User?.Identity?.Name;
             if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
             if (!await CanAccessAsync(id, userEmail)) return ProductNotFound();
 
-            var product = await _tracking.GetProductAsync(id);
+            // Kèm giá ban đầu của CHÍNH người đang xem (bảng Item)
+            var product = await _tracking.GetTrackedProductAsync(id, userEmail);
 
             if (product == null) return NotFound(new { message = "Không tìm thấy sản phẩm." });
 

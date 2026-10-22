@@ -143,6 +143,9 @@ namespace ePriTrackerBackend.Tests.Scraping
         {
             public Task<string> RenderAsync(string url, CancellationToken cancellationToken = default)
                 => Task.FromException<string>(new NotSupportedException("Không render trong test API"));
+
+            public Task<string> RenderAsync(string url, PageRenderOptions options, CancellationToken cancellationToken = default)
+                => RenderAsync(url, cancellationToken);
         }
 
         private static bool IsHttpUrl(string url) => url != null && url.StartsWith("http", StringComparison.OrdinalIgnoreCase);

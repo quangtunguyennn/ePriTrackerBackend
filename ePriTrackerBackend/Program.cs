@@ -57,9 +57,6 @@ builder.Services.AddScraping();             // Telemetry, các sàn TMĐT (Strat
 builder.Services.AddRepositories();         // Truy cập DB – Extensions/ApplicationServiceCollectionExtensions.cs
 builder.Services.AddApplicationServices();  // Nghiệp vụ + điểm vào job Hangfire – cùng file trên
 
-builder.Services.AddScoped<IPriceHistoryRepository, PriceHistoryRepository>();
-builder.Services.AddScoped<IPriceHistoryService, PriceHistoryService>();
-builder.Services.AddScoped<IYouTubeService, YouTubeService>();
 builder.Services.AddControllers();
 
 // ==========================================

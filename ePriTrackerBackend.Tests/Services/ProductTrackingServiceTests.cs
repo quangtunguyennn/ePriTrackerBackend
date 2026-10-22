@@ -17,7 +17,7 @@ namespace ePriTrackerBackend.Tests.Services
         {
             var ctx = _db.Context;
             _service = new ProductTrackingService(
-                new UserRepository(ctx), new ProductRepository(ctx), new TrackedItemRepository(ctx), new EventRepository(ctx),
+                new UserRepository(ctx), new ProductRepository(ctx), new TrackedItemRepository(ctx), new EventRepository(ctx), new PriceHistoryRepository(ctx),
                 new SingleScraperResolver(_scraper), new EfUnitOfWork(ctx), NullLogger<ProductTrackingService>.Instance);
 
             _scraper.Products[FakePlatformScraper.Normalized("123")] = new ScrapedProduct
@@ -39,8 +39,9 @@ namespace ePriTrackerBackend.Tests.Services
             var product = fresh.Product.Single();
             Assert.Equal("https://fake.vn/product-p123.html", product.ProductLink);
             Assert.Equal("iPhone 15", product.ProductName);
-            Assert.Equal(20000000m, product.InitialPrice);
+            Assert.Equal(20000000m, fresh.Item.Single().InitialPrice); // giá ban đầu lưu theo người theo dõi
             Assert.Equal(20000000m, product.LatestPrice);
+            Assert.Equal(20000000m, fresh.PriceHistory.Single().Price); // điểm đầu của biểu đồ giá
             Assert.Equal("mô tả", product.Description);
             Assert.Single(fresh.Item.Where(i => i.UserId == user.UserId && i.ProductId == product.ProductId));
             Assert.Equal(new[] { "https://fake.vn/product-p123.html" }, _scraper.RequestedUrls);
@@ -70,7 +71,8 @@ namespace ePriTrackerBackend.Tests.Services
 
             var product = _db.Fresh().Product.Single();
             Assert.Equal("Sản phẩm không xác định", product.ProductName);
-            Assert.Equal(0m, product.InitialPrice);
+            Assert.Null(_db.Fresh().Item.Single().InitialPrice);  // chưa có giá → null (job giá điền khi có giá)
+            Assert.Empty(_db.Fresh().PriceHistory);               // không ghi giá 0 vào lịch sử
             Assert.Equal("", product.ImageURL);
             Assert.False(product.IsInStock); // không có giá → tính là hết hàng, vẫn cho theo dõi
             Assert.NotNull(product.OutOfStockSince);
@@ -88,7 +90,7 @@ namespace ePriTrackerBackend.Tests.Services
             var product = _db.Fresh().Product.Single();
             Assert.False(product.IsInStock);
             Assert.Equal(16390000m, product.LatestPrice);
-            Assert.Equal(16390000m, product.InitialPrice);
+            Assert.Equal(16390000m, _db.Fresh().Item.Single().InitialPrice);
             Assert.Single(_db.Fresh().Item);
         }
 
@@ -160,7 +162,7 @@ namespace ePriTrackerBackend.Tests.Services
             using var fresh = _db.Fresh();
             var product = fresh.Product.Single();
             Assert.Equal(FakePlatformScraper.Normalized("123"), product.ProductLink); // cùng link với khi thêm bằng tay → không trùng
-            Assert.Equal(20000000m, product.InitialPrice);
+            Assert.Equal(20000000m, fresh.Item.Single().InitialPrice); // giá bán thường, không phải giá deal
             Assert.Equal("iPhone 15", product.ProductName);
             Assert.Single(fresh.Item);
         }
@@ -190,7 +192,7 @@ namespace ePriTrackerBackend.Tests.Services
             var product = _db.Fresh().Product.Single();
             Assert.Equal(FakePlatformScraper.Normalized("5"), product.ProductLink);
             Assert.Equal("Sữa", product.ProductName);
-            Assert.Equal(90000m, product.InitialPrice);
+            Assert.Equal(90000m, _db.Fresh().Item.Single().InitialPrice);
         }
 
         [Fact]
@@ -221,6 +223,41 @@ namespace ePriTrackerBackend.Tests.Services
 
             Assert.Equal(new[] { newer.ProductId, older.ProductId }, products.Select(p => p.ProductId));
             Assert.Empty(await _service.GetTrackedProductsAsync("ai@test.vn"));
+        }
+
+        [Fact]
+        public async Task InitialPrice_IsPerUser_PriceAtTheTimeEachStartedTracking()
+        {
+            _db.AddUser("a@test.vn");
+            _db.AddUser("b@test.vn");
+            await _service.AddProductAsync("https://fake.vn/iphone-p123.html", "a@test.vn"); // giá lúc này 20tr
+
+            // Job giá cập nhật giá mới, sau đó người thứ hai mới theo dõi (sửa qua chính context của service)
+            _db.Context.Product.Single().LatestPrice = 18000000;
+            _db.Context.SaveChanges();
+            await _service.AddProductAsync("https://fake.vn/iphone-p123.html", "b@test.vn");
+
+            var a = Assert.Single(await _service.GetTrackedProductsAsync("a@test.vn"));
+            var b = Assert.Single(await _service.GetTrackedProductsAsync("b@test.vn"));
+            Assert.Equal(20000000m, a.InitialPrice);
+            Assert.Equal(18000000m, b.InitialPrice);
+            Assert.Equal(18000000m, a.LatestPrice);
+            Assert.Equal("iPhone 15", a.ProductName); // các trường của Product vẫn đủ như trước
+        }
+
+        [Fact]
+        public async Task GetTrackedProduct_ForOwner_HasInitialPrice_AdminNotTracking_GetsNull()
+        {
+            var owner = _db.AddUser("u@test.vn");
+            _db.AddUser("admin@test.vn");
+            var product = _db.AddProduct("https://fake.vn/a-p1.html", price: 5000);
+            _db.Track(owner, product);
+
+            Assert.Equal(5000m, (await _service.GetTrackedProductAsync(product.ProductId, "u@test.vn"))!.InitialPrice);
+            var adminView = await _service.GetTrackedProductAsync(product.ProductId, "admin@test.vn");
+            Assert.Null(adminView!.InitialPrice);
+            Assert.Equal(5000m, adminView.LatestPrice);
+            Assert.Null(await _service.GetTrackedProductAsync(Guid.NewGuid(), "u@test.vn"));
         }
 
         [Fact]

@@ -66,13 +66,14 @@ namespace ePriTrackerBackend.Tests.Suggestions
         private static SuggestionFinder Finder(params IPlatformScraper[] scrapers)
             => new(new Resolver(scrapers), new SuggestionMatcher(), NullLogger<SuggestionFinder>.Instance);
 
-        private static Product Original(string link = "https://fake/p1", decimal initialPrice = 1000) => new()
+        // Giá tham chiếu của gợi ý = giá hiện tại (giá ban đầu nay lưu theo từng người ở bảng Item)
+        private static Product Original(string link = "https://fake/p1", decimal latestPrice = 1000) => new()
         {
             ProductId = Guid.NewGuid(),
             ProductName = "Tai nghe Bluetooth Sony WH-1000XM5 (Hàng chính hãng)",
             ProductLink = link,
             ImageURL = "",
-            InitialPrice = initialPrice
+            LatestPrice = latestPrice
         };
 
         private static ScrapedProduct Candidate(string name, decimal? price, string url) => new() { Name = name, Price = price, Url = url };
@@ -110,7 +111,7 @@ namespace ePriTrackerBackend.Tests.Suggestions
             // Giá gốc = 0 → không lọc theo giá; ứng viên thiếu ảnh/link vẫn được giữ với chuỗi rỗng (như code cũ)
             var scraper = new SearchableFake("Fake", "https://fake/", new ScrapedProduct { Name = "Tai nghe Sony", Price = null });
 
-            var s = Assert.Single(await Finder(scraper).FindAsync(Original(initialPrice: 0)));
+            var s = Assert.Single(await Finder(scraper).FindAsync(Original(latestPrice: 0)));
 
             Assert.Equal(0m, s.Price);
             Assert.Equal("", s.ImageURL);

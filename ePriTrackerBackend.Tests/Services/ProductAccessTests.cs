@@ -1,10 +1,12 @@
 ﻿using System.Security.Claims;
 using ePriTrackerBackend.Controllers;
+using ePriTrackerBackend.Models.DTOs;
 using ePriTrackerBackend.Models.Entities;
 using ePriTrackerBackend.Repositories;
 using ePriTrackerBackend.Scraping.Abstractions;
 using ePriTrackerBackend.Services.Products;
 using ePriTrackerBackend.Services.Suggestions;
+using ePriTrackerBackend.Services.YouTube;
 using ePriTrackerBackend.Tests.Helpers;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -17,6 +19,13 @@ namespace ePriTrackerBackend.Tests.Services
     /// </summary>
     public class ProductAccessTests : IDisposable
     {
+        /// <summary>Không gọi YouTube thật trong test.</summary>
+        private sealed class NoVideos : IYouTubeService
+        {
+            public Task<List<YouTubeVideoDto>> GetReviewVideosAsync(string productName, int maxResults = 3)
+                => Task.FromResult(new List<YouTubeVideoDto>());
+        }
+
         private sealed class CountingFinder : ISuggestionFinder
         {
             public int Calls { get; private set; }
@@ -38,7 +47,7 @@ namespace ePriTrackerBackend.Tests.Services
         {
             var ctx = _db.Context;
             _tracking = new ProductTrackingService(
-                new UserRepository(ctx), new ProductRepository(ctx), new TrackedItemRepository(ctx), new EventRepository(ctx),
+                new UserRepository(ctx), new ProductRepository(ctx), new TrackedItemRepository(ctx), new EventRepository(ctx), new PriceHistoryRepository(ctx),
                 new SingleScraperResolver(new FakePlatformScraper()), new EfUnitOfWork(ctx), NullLogger<ProductTrackingService>.Instance);
 
             _owner = _db.AddUser("owner@test.vn");
@@ -65,7 +74,7 @@ namespace ePriTrackerBackend.Tests.Services
             var claims = new List<Claim> { new(ClaimTypes.Name, email) };
             claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
 
-            return new ProductController(_tracking, suggestions)
+            return new ProductController(_tracking, suggestions, new NoVideos())
             {
                 ControllerContext = new ControllerContext
                 {

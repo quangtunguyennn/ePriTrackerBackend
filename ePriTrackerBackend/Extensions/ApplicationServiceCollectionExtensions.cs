@@ -4,6 +4,7 @@ using ePriTrackerBackend.Services.Auth;
 using ePriTrackerBackend.Services.Events;
 using ePriTrackerBackend.Services.Products;
 using ePriTrackerBackend.Services.Suggestions;
+using ePriTrackerBackend.Services.YouTube;
 
 namespace ePriTrackerBackend.Extensions
 {
@@ -39,6 +40,10 @@ namespace ePriTrackerBackend.Extensions
             services.AddSingleton<ISuggestionMatcher, SuggestionMatcher>(); // Thuật toán gợi ý, không có trạng thái
             services.AddSingleton<ISuggestionFinder, SuggestionFinder>();   // Tìm + lọc gợi ý, dùng chung lazy-load và job
             services.AddScoped<ISuggestionService, SuggestionService>();
+
+            // Biểu đồ giá, video review (YouTube Data API – cần "YouTubeApiKey")
+            services.AddScoped<IPriceHistoryService, PriceHistoryService>();
+            services.AddScoped<IYouTubeService, YouTubeService>();
 
             // Sự kiện
             services.AddScoped<IEventService, EventService>();

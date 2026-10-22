@@ -30,7 +30,8 @@ namespace ePriTrackerBackend.Tests
             {
                 ["JwtSettings:SecretKey"] = "test-secret-key-phai-du-dai-it-nhat-32-byte!!",
                 ["JwtSettings:Issuer"] = "ePriTracker",
-                ["JwtSettings:Audience"] = "ePriTrackerClient"
+                ["JwtSettings:Audience"] = "ePriTrackerClient",
+                ["YouTubeApiKey"] = "test-key" // YouTubeService bắt buộc có key (không gọi API trong test)
             }).Build();
 
             var services = new ServiceCollection()
@@ -67,8 +68,8 @@ namespace ePriTrackerBackend.Tests
             Assert.True(resolver.TryResolve("https://cellphones.com.vn/iphone-17-256gb.html", out var cps));
             Assert.IsType<CellphoneSScraper>(cps);
 
-            // Gợi ý tìm trên cả Tiki (API công khai) và CellphoneS (GraphQL nội bộ); CellphoneS có thêm giá theo lô
-            Assert.Equal(new[] { TikiScraper.PlatformName, CellphoneSScraper.PlatformName }, resolver.SearchablePlatforms.Select(p => p.Platform));
+            // Gợi ý tìm trên Tiki (API công khai), CellphoneS (GraphQL nội bộ), HACOM; CellphoneS có thêm giá theo lô
+            Assert.Equal(new[] { TikiScraper.PlatformName, CellphoneSScraper.PlatformName, ePriTrackerBackend.Scraping.Hacom.HacomScraper.PlatformName }, resolver.SearchablePlatforms.Select(p => p.Platform));
             Assert.IsAssignableFrom<IBatchPriceScraper>(cps);
             Assert.IsType<CellphoneSApi>(sp.GetRequiredService<ICellphoneSApi>());
         }

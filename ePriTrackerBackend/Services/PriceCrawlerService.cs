@@ -10,6 +10,7 @@ namespace ePriTrackerBackend.Services
     {
         private readonly IProductRepository _products;
         private readonly IPriceHistoryRepository _priceHistory;
+        private readonly ITrackedItemRepository _trackedItems;
         private readonly IUnitOfWork _unitOfWork;
         private readonly IPlatformScraperResolver _scrapers; // Chọn sàn theo link sản phẩm (Strategy)
         private readonly ILogger<PriceCrawlerService> _logger;
@@ -17,12 +18,14 @@ namespace ePriTrackerBackend.Services
         public PriceCrawlerService(
             IProductRepository products,
             IPriceHistoryRepository priceHistory,
+            ITrackedItemRepository trackedItems,
             IUnitOfWork unitOfWork,
             IPlatformScraperResolver scrapers,
             ILogger<PriceCrawlerService> logger)
         {
             _products = products ?? throw new ArgumentNullException(nameof(products));
             _priceHistory = priceHistory ?? throw new ArgumentNullException(nameof(priceHistory));
+            _trackedItems = trackedItems ?? throw new ArgumentNullException(nameof(trackedItems));
             _unitOfWork = unitOfWork ?? throw new ArgumentNullException(nameof(unitOfWork));
             _scrapers = scrapers ?? throw new ArgumentNullException(nameof(scrapers));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -58,6 +61,7 @@ namespace ePriTrackerBackend.Services
                     .ToDictionary(x => x.ProductId, x => x.Scraped);
 
                 bool anyChange = false;
+                _firstPrices.Clear();
                 var now = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7));
 
                 foreach (var product in chunk)
@@ -91,6 +95,10 @@ namespace ePriTrackerBackend.Services
                 if (anyChange)
                 {
                     await _unitOfWork.SaveChangesAsync();
+
+                    // Sản phẩm thêm lúc hết hàng vừa có giá lần đầu → đó là giá ban đầu của những ai đang theo dõi
+                    foreach (var (productId, price) in _firstPrices)
+                        await _trackedItems.FillMissingInitialPriceAsync(productId, price);
                 }
 
                 // Delay ngẫu nhiên giữa các Lô để tránh kích hoạt WAF – chỉ khi lô này có gửi request lẻ
@@ -158,6 +166,9 @@ namespace ePriTrackerBackend.Services
         /// - Hết hàng: GIỮ giá gần nhất, không ghi lịch sử giá, đánh dấu hết hàng (ghi thời điểm). Không tự bỏ theo dõi.
         /// - Còn hàng: cập nhật giá như cũ, bỏ nhãn hết hàng. Giá thật đầu tiên của sản phẩm thêm lúc chưa có giá → làm giá ban đầu.
         /// </summary>
+        // Sản phẩm có giá lần đầu trong lô đang xử lý (xem ApplyScrapeResult)
+        private readonly List<(Guid ProductId, decimal Price)> _firstPrices = new();
+
         private ScrapeOutcome ApplyScrapeResult(Product product, ScrapedProduct scraped, DateTimeOffset now)
         {
             if (!scraped.IsInStock)
@@ -180,7 +191,9 @@ namespace ePriTrackerBackend.Services
                 outcome = ScrapeOutcome.StockChanged;
             }
 
-           
+            // Thêm lúc chưa có giá (hết hàng) → giá thật đầu tiên là giá ban đầu (giá ban đầu nay lưu theo từng người ở bảng Item)
+            if ((product.LatestPrice ?? 0) <= 0)
+                _firstPrices.Add((product.ProductId, price));
 
             if (price != product.LatestPrice)
             {

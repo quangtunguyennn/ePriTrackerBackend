@@ -16,7 +16,12 @@ namespace ePriTrackerBackend.Services.Products
     {
         Task AddProductAsync(string productLink, string userEmail);
         Task<TrackDealResult> TrackDealAsync(Guid userId, TrackDealDto deal);
-        Task<List<Product>> GetTrackedProductsAsync(string userEmail);
+        /// <summary>Danh sách theo dõi kèm giá ban đầu CỦA người dùng này (bảng Item).</summary>
+        Task<List<TrackedProductDTO>> GetTrackedProductsAsync(string userEmail);
+
+        /// <summary>Một sản phẩm kèm giá ban đầu của người dùng (Admin xem sản phẩm không theo dõi → InitialPrice null). Không có → null.</summary>
+        Task<TrackedProductDTO> GetTrackedProductAsync(Guid productId, string userEmail);
+
         Task<Product> GetProductAsync(Guid productId);
         Task<bool> UntrackProductAsync(Guid productId, string userEmail);
         Task<bool> CanAccessProductAsync(Guid productId, string userEmail, bool isAdmin);
@@ -86,20 +91,15 @@ namespace ePriTrackerBackend.Services.Products
                 product = await ScrapeNewProductAsync(scraper, normalizedLink);
                 _products.Add(product);
 
-                // Lưu lịch sử giá lần đầu với fallback ?? 0m để fix lỗi kiểu dữ liệu
-                _priceHistories.Add(new PriceHistory
-                {
-                    ProductId = product.ProductId,
-                    Price = product.LatestPrice ?? 0m,
-                    CheckedAt = product.LastUpdatedAt ?? DateTimeOffset.UtcNow
-                });
+                AddInitialPriceHistory(product);
 
                 await _unitOfWork.SaveChangesAsync();
             }
 
             if (await _trackedItems.ExistsAsync(user.UserId, product.ProductId)) return;
 
-            _trackedItems.Add(new Item { UserId = user.UserId, ProductId = product.ProductId });
+            // Giá ban đầu tính theo TỪNG người: giá tại lúc người này bắt đầu theo dõi (hết hàng → null, job giá điền khi có giá)
+            _trackedItems.Add(new Item { UserId = user.UserId, ProductId = product.ProductId, InitialPrice = CurrentPriceOrNull(product) });
             await _unitOfWork.SaveChangesAsync();
 
             await LinkToCampaignEventAsync(productLink, product.ProductId);
@@ -122,13 +122,7 @@ namespace ePriTrackerBackend.Services.Products
                 product = await TryScrapeNewProductAsync(scraper, normalizedLink) ?? ProductFromDeal(deal, normalizedLink);
                 _products.Add(product);
 
-                // Lưu lịch sử giá lần đầu cho deal với fallback ?? 0m
-                _priceHistories.Add(new PriceHistory
-                {
-                    ProductId = product.ProductId,
-                    Price = product.LatestPrice ?? 0m,
-                    CheckedAt = product.LastUpdatedAt ?? DateTimeOffset.UtcNow
-                });
+                AddInitialPriceHistory(product);
 
                 await _unitOfWork.SaveChangesAsync();
             }
@@ -140,18 +134,33 @@ namespace ePriTrackerBackend.Services.Products
             {
                 ItemId = Guid.NewGuid(),
                 UserId = userId,
-                ProductId = product.ProductId
+                ProductId = product.ProductId,
+                InitialPrice = CurrentPriceOrNull(product)
             });
             await _unitOfWork.SaveChangesAsync();
 
             return TrackDealResult.Added;
         }
 
-        public async Task<List<Product>> GetTrackedProductsAsync(string userEmail)
+        public async Task<List<TrackedProductDTO>> GetTrackedProductsAsync(string userEmail)
         {
             var user = await _users.FindByEmailAsync(userEmail);
-            if (user == null) return new List<Product>();
-            return await _products.GetTrackedByUserAsync(user.UserId);
+            if (user == null) return new List<TrackedProductDTO>();
+
+            return (await _trackedItems.GetByUserWithProductsAsync(user.UserId))
+                .Where(i => i.Product != null)
+                .Select(i => TrackedProductDTO.From(i.Product, i))
+                .ToList();
+        }
+
+        public async Task<TrackedProductDTO> GetTrackedProductAsync(Guid productId, string userEmail)
+        {
+            var product = await _products.FindByIdAsync(productId);
+            if (product == null) return null;
+
+            var user = await _users.FindByEmailAsync(userEmail);
+            var item = user == null ? null : await _trackedItems.FindAsync(user.UserId, productId);
+            return TrackedProductDTO.From(product, item);
         }
 
         public Task<Product> GetProductAsync(Guid productId) => _products.FindByIdAsync(productId);
@@ -200,6 +209,22 @@ namespace ePriTrackerBackend.Services.Products
             AddedAt = DateTime.UtcNow,
             LastUpdatedAt = DateTimeOffset.UtcNow
         };
+
+        private static decimal? CurrentPriceOrNull(Product product)
+            => product.LatestPrice > 0 ? product.LatestPrice : null;
+
+        /// <summary>Điểm đầu tiên của biểu đồ giá. Chưa có giá (hết hàng) → không ghi, job giá ghi khi có giá.</summary>
+        private void AddInitialPriceHistory(Product product)
+        {
+            if (CurrentPriceOrNull(product) is not decimal price) return;
+
+            _priceHistories.Add(new PriceHistory
+            {
+                ProductId = product.ProductId,
+                Price = price,
+                CheckedAt = product.LastUpdatedAt ?? DateTimeOffset.UtcNow
+            });
+        }
 
         private static async Task<Product> ScrapeNewProductAsync(IPlatformScraper scraper, string normalizedLink)
         {
