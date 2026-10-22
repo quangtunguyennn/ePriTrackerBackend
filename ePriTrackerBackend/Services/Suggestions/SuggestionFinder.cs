@@ -50,7 +50,7 @@ namespace ePriTrackerBackend.Services.Suggestions
             if (string.IsNullOrWhiteSpace(keyword))
                 return new List<SuggestionProduct>();
 
-            decimal referencePrice = _matcher.GetReferencePrice(product.InitialPrice, product.LatestPrice);
+            decimal referencePrice = 10; // FIX
             sourceScraper.TryNormalizeProductUrl(product.ProductLink, out var originalLink);
 
             var candidates = await SearchAllPlatformsAsync(keyword, options, cancellationToken);

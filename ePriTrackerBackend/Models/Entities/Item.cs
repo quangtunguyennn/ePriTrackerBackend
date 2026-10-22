@@ -15,5 +15,7 @@ namespace ePriTrackerBackend.Models.Entities
         public Guid ProductId { get; set; }
         [JsonIgnore]
         public Product Product { get; set; }
+        public decimal? InitialPrice { get; set; }
+        public decimal? TargetPrice { get; set; }
     }
 }

@@ -108,11 +108,7 @@ namespace ePriTrackerBackend.Services
                 outcome = ScrapeOutcome.StockChanged;
             }
 
-            if (product.InitialPrice <= 0)
-            {
-                product.InitialPrice = price;
-                outcome = ScrapeOutcome.StockChanged;
-            }
+           
 
             if (price != product.LatestPrice)
             {

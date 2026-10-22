@@ -196,7 +196,6 @@ namespace ePriTrackerBackend.Services.Products
             ProductName = deal.ProductName,
             ProductLink = normalizedLink,
             ImageURL = deal.ImageURL,
-            InitialPrice = deal.CurrentPrice,
             LatestPrice = deal.CurrentPrice,
             AddedAt = DateTime.UtcNow,
             LastUpdatedAt = DateTimeOffset.UtcNow
@@ -215,7 +214,6 @@ namespace ePriTrackerBackend.Services.Products
                 ProductName = scraped.Name ?? "Sản phẩm không xác định",
                 ImageURL = scraped.ImageUrl ?? "",
                 Description = ProductDescription.Sanitize(scraped.Description),
-                InitialPrice = price,
                 AddedAt = DateTime.UtcNow,
                 LatestPrice = price,
                 LastUpdatedAt = now,
