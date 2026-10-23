@@ -24,18 +24,26 @@ namespace ePriTrackerBackend.Controllers
             _suggestions = suggestions;
             _youTubeService = youTubeService;
         }
+        // Thêm class request này vào trong ProductController (hoặc để ra file riêng trong thư mục DTOs)
+        public class AddProductRequest
+        {
+            public string ProductLink { get; set; }
+            public decimal? TargetPrice { get; set; }
+        }
 
-        // Endpoint: POST /api/product/add
+        // Cập nhật lại hàm AddProduct
         [HttpPost("/api/product/add")]
         [Authorize(Roles = "User")]
-        public async Task<IActionResult> AddProduct([FromBody] string productLink)
+        public async Task<IActionResult> AddProduct([FromBody] AddProductRequest request)
         {
             try
             {
                 var userEmail = User?.Identity?.Name;
                 if (string.IsNullOrEmpty(userEmail)) return Unauthorized();
 
-                await _tracking.AddProductAsync(productLink, userEmail);
+                // Truyền thêm request.TargetPrice vào hàm AddProductAsync
+                await _tracking.AddProductAsync(request.ProductLink, userEmail, request.TargetPrice);
+
                 return Ok(new { message = "Thêm sản phẩm vào danh sách theo dõi thành công!" });
             }
             catch (Exception ex)

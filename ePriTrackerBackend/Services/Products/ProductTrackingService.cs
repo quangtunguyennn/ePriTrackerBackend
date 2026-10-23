@@ -14,7 +14,7 @@ namespace ePriTrackerBackend.Services.Products
 
     public interface IProductTrackingService
     {
-        Task AddProductAsync(string productLink, string userEmail);
+        Task AddProductAsync(string productLink, string userEmail, decimal? TargetPrice);
         Task<TrackDealResult> TrackDealAsync(Guid userId, TrackDealDto deal);
         /// <summary>Danh sách theo dõi kèm giá ban đầu CỦA người dùng này (bảng Item).</summary>
         Task<List<TrackedProductDTO>> GetTrackedProductsAsync(string userEmail);
@@ -62,7 +62,7 @@ namespace ePriTrackerBackend.Services.Products
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
-        public async Task AddProductAsync(string productLink, string userEmail)
+        public async Task AddProductAsync(string productLink, string userEmail, decimal? TargetPrice)
         {
             if (string.IsNullOrWhiteSpace(productLink))
                 throw new ArgumentException("Link sản phẩm không được trống.", nameof(productLink));
@@ -99,7 +99,15 @@ namespace ePriTrackerBackend.Services.Products
             if (await _trackedItems.ExistsAsync(user.UserId, product.ProductId)) return;
 
             // Giá ban đầu tính theo TỪNG người: giá tại lúc người này bắt đầu theo dõi (hết hàng → null, job giá điền khi có giá)
-            _trackedItems.Add(new Item { UserId = user.UserId, ProductId = product.ProductId, InitialPrice = CurrentPriceOrNull(product) });
+            // CẬP NHẬT TẠI ĐÂY: Lưu cả InitialPrice và TargetPrice vào bảng Item
+            _trackedItems.Add(new Item
+            {
+                UserId = user.UserId,
+                ProductId = product.ProductId,
+                InitialPrice = CurrentPriceOrNull(product), // Hàm lấy giá hiện tại của bạn
+                TargetPrice = TargetPrice                   // Lưu giá mục tiêu từ tham số truyền vào
+            });
+
             await _unitOfWork.SaveChangesAsync();
 
             await LinkToCampaignEventAsync(productLink, product.ProductId);
