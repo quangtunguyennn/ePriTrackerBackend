@@ -49,9 +49,7 @@ namespace ePriTrackerBackend.Extensions
             services.AddScoped<IEventService, EventService>();
             services.AddScoped<IAutoEventSyncService, AutoEventSyncService>(); // sàn tự đăng (CellphoneS) – cũng là job "sync-auto-events-job"
 
-            // Job Hangfire (giữ nguyên tên interface – Hangfire lưu tên kiểu dưới DB)
-            services.AddScoped<IPriceCrawlerService, PriceCrawlerService>();
-            services.AddScoped<ISuggestionsCrawlerService, SuggestionCrawlService>();
+     
             services.AddScoped<IEventCacheService, EventCacheService>();
 
             return services;

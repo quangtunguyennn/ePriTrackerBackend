@@ -15,6 +15,9 @@ namespace ePriTrackerBackend.Repositories
 
         void Add(Product product);
 
+        // BỔ SUNG PHƯƠNG THỨC NÀY
+        void Update(Product product);
+
         /// <summary>Sản phẩm user đang theo dõi, mới thêm trước.</summary>
         Task<List<Product>> GetTrackedByUserAsync(Guid userId);
 

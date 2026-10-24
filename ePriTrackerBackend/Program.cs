@@ -4,6 +4,7 @@ using ePriTrackerBackend.Repositories;
 using ePriTrackerBackend.Scraping;
 using ePriTrackerBackend.Services;
 using ePriTrackerBackend.Services.Events;
+using ePriTrackerBackend.Services.PriceCronJob;
 using ePriTrackerBackend.Services.YouTube;
 using Hangfire;
 using Hangfire.SqlServer;
@@ -21,7 +22,6 @@ var builder = WebApplication.CreateBuilder(args);
 // ==========================================
 builder.Services.AddDbContext<ePriTrackerContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DBConnection")));
-// (HttpClient của từng sàn được đăng ký trong AddScraping() bên dưới)
 
 // ==========================================
 // 2. CẤU HÌNH AUTHENTICATION (JWT) & CORS
@@ -53,10 +53,14 @@ builder.Services.AddCors(options =>
 // ==========================================
 // 3. ĐĂNG KÝ REPOSITORIES & SERVICES (DI)
 // ==========================================
-builder.Services.AddScraping();             // Telemetry, các sàn TMĐT (Strategy), bộ chọn sàn – Scraping/ScrapingServiceCollectionExtensions.cs
-builder.Services.AddRepositories();         // Truy cập DB – Extensions/ApplicationServiceCollectionExtensions.cs
-builder.Services.AddApplicationServices();  // Nghiệp vụ + điểm vào job Hangfire – cùng file trên
+builder.Services.AddScraping();             // Telemetry, các sàn TMĐT (Strategy), bộ chọn sàn
+builder.Services.AddRepositories();         // Truy cập DB
+builder.Services.AddApplicationServices();  // Nghiệp vụ + điểm vào job Hangfire
 
+// Services cho luồng cào giá Adaptive & Thông báo
+builder.Services.AddScoped<ePriTrackerBackend.Services.Notification.INotificationService, ePriTrackerBackend.Services.Notification.NotificationService>();
+builder.Services.AddScoped<IPriceCrawlerWorker, PriceCrawlerWorker>();
+builder.Services.AddTransient<ePriTrackerBackend.Services.Notification.IEmailService, ePriTrackerBackend.Services.Notification.EmailService>();
 builder.Services.AddControllers();
 
 // ==========================================
@@ -134,45 +138,41 @@ app.UseHangfireDashboard();
 // ==========================================
 // 7. CẤU HÌNH TIMEZONE & ĐĂNG KÝ HANGFIRE JOBS
 // ==========================================
-// Thiết lập múi giờ Việt Nam an toàn đa nền tảng không cần thư viện ngoài
+// Lấy múi giờ Việt Nam an toàn cho cả Windows và Linux/Docker
 TimeZoneInfo vietnamTz;
 try
 {
-    vietnamTz = TimeZoneInfo.FindSystemTimeZoneById("Asia/Ho_Chi_Minh"); // Dành cho Linux / Docker
+    vietnamTz = TimeZoneInfo.FindSystemTimeZoneById("Asia/Ho_Chi_Minh");
 }
 catch (TimeZoneNotFoundException)
 {
-    vietnamTz = TimeZoneInfo.FindSystemTimeZoneById("SE Asia Standard Time"); // Dành cho Windows / IIS
+    vietnamTz = TimeZoneInfo.FindSystemTimeZoneById("SE Asia Standard Time");
 }
 
-// 1. Job tự động crawl giá mỗi 6 tiếng
-RecurringJob.AddOrUpdate<IPriceCrawlerService>(
-    "update-prices-job",
-    service => service.UpdateAllTrackedProductPricesAsync(),
-    "0 */6 * * *",
-    //"*/2 * * * *",
+// Chuyển đổi thời gian UTC hiện tại sang giờ Việt Nam
+var utcNow = DateTimeOffset.UtcNow;
+var startTime = TimeZoneInfo.ConvertTime(utcNow, vietnamTz);
+
+// 1. Job cào giá Adaptive theo Tier (Kích hoạt quét mẻ sản phẩm đến hạn mỗi 1 phút)
+RecurringJob.AddOrUpdate<IPriceCrawlerWorker>(
+    "adaptive-price-crawler-job",
+    worker => worker.ProcessPendingProductsAsync(CancellationToken.None),
+    Cron.Minutely(),
     new RecurringJobOptions { TimeZone = vietnamTz }
 );
 
-// 2. Job cập nhật gợi ý mỗi 6 tiếng
-RecurringJob.AddOrUpdate<ISuggestionsCrawlerService>(
-    "update-suggestions-job",
-    service => service.UpdateAllTrackedProductSuggestionsAsync(CancellationToken.None),
-    "0 */6 * * *",
-    //"*/2 * * * *",
-    new RecurringJobOptions { TimeZone = vietnamTz }
-);
 
+
+// 3. Cache Sự kiện
 RecurringJob.AddOrUpdate<IEventCacheService>(
     "refresh-event-cache-job",
     service => service.RefreshLiveEventProductsCacheAsync(),
     "*/30 * * * *",
-    //"*/2 * * * *",
     new RecurringJobOptions { TimeZone = vietnamTz }
 );
 BackgroundJob.Enqueue<IEventCacheService>(service => service.RefreshLiveEventProductsCacheAsync());
 
-// 4. Sự kiện sàn tự đăng (CellphoneS): đăng sự kiện đang chạy, xoá sự kiện hết hạn – không qua Admin
+// 4. Đồng bộ sự kiện tự động
 RecurringJob.AddOrUpdate<IAutoEventSyncService>(
     "sync-auto-events-job",
     service => service.SyncAllAsync(CancellationToken.None),

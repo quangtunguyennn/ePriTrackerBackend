@@ -21,6 +21,9 @@ namespace ePriTrackerBackend.Repositories
 
         public void Add(Product product) => _context.Product.Add(product);
 
+        // BỔ SUNG PHƯƠNG THỨC NÀY
+        public void Update(Product product) => _context.Product.Update(product);
+
         public async Task<List<Product>> GetTrackedByUserAsync(Guid userId)
         {
             var trackedProductIds = await _context.Item

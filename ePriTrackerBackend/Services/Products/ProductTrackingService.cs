@@ -16,12 +16,8 @@ namespace ePriTrackerBackend.Services.Products
     {
         Task AddProductAsync(string productLink, string userEmail, decimal? TargetPrice);
         Task<TrackDealResult> TrackDealAsync(Guid userId, TrackDealDto deal);
-        /// <summary>Danh sách theo dõi kèm giá ban đầu CỦA người dùng này (bảng Item).</summary>
         Task<List<TrackedProductDTO>> GetTrackedProductsAsync(string userEmail);
-
-        /// <summary>Một sản phẩm kèm giá ban đầu của người dùng (Admin xem sản phẩm không theo dõi → InitialPrice null). Không có → null.</summary>
         Task<TrackedProductDTO> GetTrackedProductAsync(Guid productId, string userEmail);
-
         Task<Product> GetProductAsync(Guid productId);
         Task<bool> UntrackProductAsync(Guid productId, string userEmail);
         Task<bool> CanAccessProductAsync(Guid productId, string userEmail, bool isAdmin);
@@ -30,7 +26,6 @@ namespace ePriTrackerBackend.Services.Products
     public class ProductTrackingService : IProductTrackingService
     {
         public const string InvalidLinkMessage = "Link sản phẩm không hợp lệ hoặc sàn chưa được hỗ trợ.";
-
         private static readonly Regex CampaignCodeRegex = new Regex(@"itm_campaign=([^&]+)", RegexOptions.Compiled);
 
         private readonly IUserRepository _users;
@@ -41,6 +36,16 @@ namespace ePriTrackerBackend.Services.Products
         private readonly IPlatformScraperResolver _scrapers;
         private readonly IUnitOfWork _unitOfWork;
         private readonly ILogger<ProductTrackingService> _logger;
+
+        private static readonly TimeZoneInfo VietnamTz = GetVietnamTimeZone();
+
+        private static TimeZoneInfo GetVietnamTimeZone()
+        {
+            try { return TimeZoneInfo.FindSystemTimeZoneById("Asia/Ho_Chi_Minh"); }
+            catch { return TimeZoneInfo.FindSystemTimeZoneById("SE Asia Standard Time"); }
+        }
+
+        private static DateTimeOffset GetNowVn() => TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, VietnamTz);
 
         public ProductTrackingService(
             IUserRepository users,
@@ -64,75 +69,71 @@ namespace ePriTrackerBackend.Services.Products
 
         public async Task AddProductAsync(string productLink, string userEmail, decimal? TargetPrice)
         {
-            if (string.IsNullOrWhiteSpace(productLink))
-                throw new ArgumentException("Link sản phẩm không được trống.", nameof(productLink));
-            if (string.IsNullOrWhiteSpace(userEmail))
-                throw new ArgumentException("Email người dùng không được trống.", nameof(userEmail));
+            if (string.IsNullOrWhiteSpace(productLink)) throw new ArgumentException("Link sản phẩm không được trống.", nameof(productLink));
+            if (string.IsNullOrWhiteSpace(userEmail)) throw new ArgumentException("Email người dùng không được trống.", nameof(userEmail));
 
             var user = await _users.FindByEmailAsync(userEmail);
-            if (user == null)
-            {
-                _logger.LogWarning("Không tìm thấy người dùng với email: {Email}", userEmail);
-                throw new Exception("Không tìm thấy thông tin người dùng.");
-            }
+            if (user == null) throw new Exception("Không tìm thấy thông tin người dùng.");
 
-            if (!_scrapers.TryResolve(productLink, out var scraper)
-                || !scraper.TryNormalizeProductUrl(productLink, out var normalizedLink))
-            {
-                _logger.LogWarning("Link sản phẩm không hợp lệ hoặc sàn chưa hỗ trợ: {ProductLink}", productLink);
+            if (!_scrapers.TryResolve(productLink, out var scraper) || !scraper.TryNormalizeProductUrl(productLink, out var normalizedLink))
                 throw new Exception(InvalidLinkMessage);
-            }
 
             var product = await _products.FindByLinkAsync(normalizedLink);
+            bool isNewProduct = false;
+
             if (product == null)
             {
-                _logger.LogInformation("Sản phẩm chưa có trong DB, tiến hành lấy dữ liệu từ {Platform}: {ProductLink}", scraper.Platform, normalizedLink);
-
+                isNewProduct = true;
                 product = await ScrapeNewProductAsync(scraper, normalizedLink);
                 _products.Add(product);
-
                 AddInitialPriceHistory(product);
-
-                await _unitOfWork.SaveChangesAsync();
             }
 
             if (await _trackedItems.ExistsAsync(user.UserId, product.ProductId)) return;
 
-            // Giá ban đầu tính theo TỪNG người: giá tại lúc người này bắt đầu theo dõi (hết hàng → null, job giá điền khi có giá)
-            // CẬP NHẬT TẠI ĐÂY: Lưu cả InitialPrice và TargetPrice vào bảng Item
             _trackedItems.Add(new Item
             {
                 UserId = user.UserId,
                 ProductId = product.ProductId,
-                InitialPrice = CurrentPriceOrNull(product), // Hàm lấy giá hiện tại của bạn
-                TargetPrice = TargetPrice                   // Lưu giá mục tiêu từ tham số truyền vào
+                InitialPrice = CurrentPriceOrNull(product),
+                TargetPrice = TargetPrice
             });
 
+            // LOGIC CẬP NHẬT CRONJOB & TIER
+            product.ActiveTrackersCount++;
+
+            if (product.ActiveTrackersCount == 1)
+            {
+                product.NextCrawlAt = GetNowVn(); // Giờ VN
+                product.CurrentTier = 3;
+                product.CrawlIntervalMinutes = 1440;
+            }
+
+            if (TargetPrice.HasValue && (!product.MaxTargetPrice.HasValue || TargetPrice.Value > product.MaxTargetPrice.Value))
+            {
+                product.MaxTargetPrice = TargetPrice.Value;
+            }
+
+            if (!isNewProduct) _products.Update(product);
+
             await _unitOfWork.SaveChangesAsync();
-
             await LinkToCampaignEventAsync(productLink, product.ProductId);
-
-            _logger.LogInformation("Đã thêm sản phẩm {ProductId} vào danh sách theo dõi của User {UserId}", product.ProductId, user.UserId);
         }
 
         public async Task<TrackDealResult> TrackDealAsync(Guid userId, TrackDealDto deal)
         {
-            if (!_scrapers.TryResolve(deal.ProductLink, out var scraper)
-                || !scraper.TryNormalizeProductUrl(deal.ProductLink, out var normalizedLink))
-            {
-                _logger.LogWarning("Link deal không hợp lệ hoặc sàn chưa hỗ trợ: {ProductLink}", deal.ProductLink);
+            if (!_scrapers.TryResolve(deal.ProductLink, out var scraper) || !scraper.TryNormalizeProductUrl(deal.ProductLink, out var normalizedLink))
                 throw new Exception(InvalidLinkMessage);
-            }
 
             var product = await _products.FindByLinkAsync(normalizedLink);
+            bool isNewProduct = false;
+
             if (product == null)
             {
+                isNewProduct = true;
                 product = await TryScrapeNewProductAsync(scraper, normalizedLink) ?? ProductFromDeal(deal, normalizedLink);
                 _products.Add(product);
-
                 AddInitialPriceHistory(product);
-
-                await _unitOfWork.SaveChangesAsync();
             }
 
             if (await _trackedItems.ExistsAsync(userId, product.ProductId))
@@ -145,33 +146,20 @@ namespace ePriTrackerBackend.Services.Products
                 ProductId = product.ProductId,
                 InitialPrice = CurrentPriceOrNull(product)
             });
-            await _unitOfWork.SaveChangesAsync();
 
+            product.ActiveTrackersCount++;
+            if (product.ActiveTrackersCount == 1)
+            {
+                product.NextCrawlAt = GetNowVn(); // Giờ VN
+                product.CurrentTier = 3;
+                product.CrawlIntervalMinutes = 1440;
+            }
+
+            if (!isNewProduct) _products.Update(product);
+
+            await _unitOfWork.SaveChangesAsync();
             return TrackDealResult.Added;
         }
-
-        public async Task<List<TrackedProductDTO>> GetTrackedProductsAsync(string userEmail)
-        {
-            var user = await _users.FindByEmailAsync(userEmail);
-            if (user == null) return new List<TrackedProductDTO>();
-
-            return (await _trackedItems.GetByUserWithProductsAsync(user.UserId))
-                .Where(i => i.Product != null)
-                .Select(i => TrackedProductDTO.From(i.Product, i))
-                .ToList();
-        }
-
-        public async Task<TrackedProductDTO> GetTrackedProductAsync(Guid productId, string userEmail)
-        {
-            var product = await _products.FindByIdAsync(productId);
-            if (product == null) return null;
-
-            var user = await _users.FindByEmailAsync(userEmail);
-            var item = user == null ? null : await _trackedItems.FindAsync(user.UserId, productId);
-            return TrackedProductDTO.From(product, item);
-        }
-
-        public Task<Product> GetProductAsync(Guid productId) => _products.FindByIdAsync(productId);
 
         public async Task<bool> UntrackProductAsync(Guid productId, string userEmail)
         {
@@ -182,55 +170,97 @@ namespace ePriTrackerBackend.Services.Products
             if (item == null) throw new Exception("Sản phẩm không tồn tại trong danh sách theo dõi.");
 
             _trackedItems.Remove(item);
+
+            var product = await _products.FindByIdAsync(productId);
+            if (product != null && product.ActiveTrackersCount > 0)
+            {
+                product.ActiveTrackersCount--;
+
+                if (product.ActiveTrackersCount == 0)
+                {
+                    product.CurrentTier = 4;
+                    product.CrawlIntervalMinutes = 43200;
+                    product.NextCrawlAt = GetNowVn().AddDays(30); // Giờ VN
+                    product.MaxTargetPrice = null;
+                }
+                else if (item.TargetPrice.HasValue && product.MaxTargetPrice == item.TargetPrice.Value)
+                {
+                    product.NextCrawlAt = GetNowVn(); // Giờ VN
+                }
+
+                _products.Update(product);
+            }
+
             await _unitOfWork.SaveChangesAsync();
             return true;
         }
 
+        public async Task<List<TrackedProductDTO>> GetTrackedProductsAsync(string userEmail)
+        {
+            var user = await _users.FindByEmailAsync(userEmail);
+            if (user == null) return new List<TrackedProductDTO>();
+            return (await _trackedItems.GetByUserWithProductsAsync(user.UserId))
+                .Where(i => i.Product != null)
+                .Select(i => TrackedProductDTO.From(i.Product, i))
+                .ToList();
+        }
+
+        public async Task<TrackedProductDTO> GetTrackedProductAsync(Guid productId, string userEmail)
+        {
+            var product = await _products.FindByIdAsync(productId);
+            if (product == null) return null;
+            var user = await _users.FindByEmailAsync(userEmail);
+            var item = user == null ? null : await _trackedItems.FindAsync(user.UserId, productId);
+            return TrackedProductDTO.From(product, item);
+        }
+
+        public Task<Product> GetProductAsync(Guid productId) => _products.FindByIdAsync(productId);
+
         public async Task<bool> CanAccessProductAsync(Guid productId, string userEmail, bool isAdmin)
         {
             if (isAdmin) return true;
-
             var user = await _users.FindByEmailAsync(userEmail);
             return user != null && await _trackedItems.ExistsAsync(user.UserId, productId);
         }
 
         private async Task<Product> TryScrapeNewProductAsync(IPlatformScraper scraper, string normalizedLink)
         {
-            try
-            {
-                return await ScrapeNewProductAsync(scraper, normalizedLink);
-            }
+            try { return await ScrapeNewProductAsync(scraper, normalizedLink); }
             catch (Exception ex)
             {
-                _logger.LogWarning("Không cào được {Url} khi theo dõi deal, dùng thông tin của deal: {Message}", normalizedLink, ex.Message);
+                _logger.LogWarning("Không cào được {Url} khi theo dõi deal: {Message}", normalizedLink, ex.Message);
                 return null;
             }
         }
 
-        private static Product ProductFromDeal(TrackDealDto deal, string normalizedLink) => new Product
+        private static Product ProductFromDeal(TrackDealDto deal, string normalizedLink)
         {
-            ProductId = Guid.NewGuid(),
-            ProductName = deal.ProductName,
-            ProductLink = normalizedLink,
-            ImageURL = deal.ImageURL,
-            LatestPrice = deal.CurrentPrice,
-            AddedAt = DateTime.UtcNow,
-            LastUpdatedAt = DateTimeOffset.UtcNow
-        };
+            var nowVn = GetNowVn();
+            return new Product
+            {
+                ProductId = Guid.NewGuid(),
+                ProductName = deal.ProductName,
+                ProductLink = normalizedLink,
+                ImageURL = deal.ImageURL,
+                LatestPrice = deal.CurrentPrice,
+                AddedAt = nowVn.DateTime, // Giờ VN
+                LastUpdatedAt = nowVn,    // Giờ VN
+                NextCrawlAt = nowVn,      // Giờ VN
+                CurrentTier = 3,
+                CrawlIntervalMinutes = 1440
+            };
+        }
 
-        private static decimal? CurrentPriceOrNull(Product product)
-            => product.LatestPrice > 0 ? product.LatestPrice : null;
+        private static decimal? CurrentPriceOrNull(Product product) => product.LatestPrice > 0 ? product.LatestPrice : null;
 
-        /// <summary>Điểm đầu tiên của biểu đồ giá. Chưa có giá (hết hàng) → không ghi, job giá ghi khi có giá.</summary>
         private void AddInitialPriceHistory(Product product)
         {
             if (CurrentPriceOrNull(product) is not decimal price) return;
-
             _priceHistories.Add(new PriceHistory
             {
                 ProductId = product.ProductId,
                 Price = price,
-                CheckedAt = product.LastUpdatedAt ?? DateTimeOffset.UtcNow
+                CheckedAt = product.LastUpdatedAt ?? GetNowVn() // Giờ VN
             });
         }
 
@@ -238,7 +268,7 @@ namespace ePriTrackerBackend.Services.Products
         {
             var scraped = await scraper.GetProductAsync(normalizedLink);
             decimal price = scraped.Price ?? 0;
-            var now = DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(7));
+            var nowVn = GetNowVn();
 
             return new Product
             {
@@ -247,11 +277,16 @@ namespace ePriTrackerBackend.Services.Products
                 ProductName = scraped.Name ?? "Sản phẩm không xác định",
                 ImageURL = scraped.ImageUrl ?? "",
                 Description = ProductDescription.Sanitize(scraped.Description),
-                AddedAt = DateTime.UtcNow,
+                AddedAt = nowVn.DateTime, // Giờ VN
                 LatestPrice = price,
-                LastUpdatedAt = now,
+                LastUpdatedAt = nowVn,    // Giờ VN
                 IsInStock = scraped.IsInStock,
-                OutOfStockSince = scraped.IsInStock ? null : now
+                OutOfStockSince = scraped.IsInStock ? null : nowVn, // Giờ VN
+
+                ActiveTrackersCount = 0,
+                CurrentTier = 3,
+                CrawlIntervalMinutes = 1440,
+                NextCrawlAt = null
             };
         }
 
@@ -259,18 +294,12 @@ namespace ePriTrackerBackend.Services.Products
         {
             var campaignMatch = CampaignCodeRegex.Match(productLink);
             if (!campaignMatch.Success) return;
-
             string campaignCode = campaignMatch.Groups[1].Value.ToLower();
             var matchedEvent = await _events.FindByLinkContainingAsync(campaignCode);
             if (matchedEvent == null) return;
-
             if (await _events.HasProductAsync(matchedEvent.EventId, productId)) return;
 
-            _events.AddProduct(new EventProduct
-            {
-                EventId = matchedEvent.EventId,
-                ProductId = productId
-            });
+            _events.AddProduct(new EventProduct { EventId = matchedEvent.EventId, ProductId = productId });
             await _unitOfWork.SaveChangesAsync();
         }
     }

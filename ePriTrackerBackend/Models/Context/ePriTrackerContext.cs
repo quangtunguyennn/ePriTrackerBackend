@@ -19,12 +19,24 @@ namespace ePriTrackerBackend.Models.Context
         public DbSet<Event> Event { get; set; }
         public DbSet<EventProduct> EventProduct { get; set; }
 
+        // Bổ sung DbSet cho bảng Notification
+        public DbSet<Notification> Notification { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
+            base.OnModelCreating(modelBuilder);
+
+            // 1. Cấu hình Khóa chính nâng cao
             modelBuilder.Entity<EventProduct>()
                 .HasKey(ep => new { ep.EventId, ep.ProductId });
 
-            base.OnModelCreating(modelBuilder);
+            // 2. Index cho Cronjob truy vấn sản phẩm siêu tốc (NextCrawlAt + ActiveTrackersCount)
+            modelBuilder.Entity<Product>()
+                .HasIndex(p => new { p.NextCrawlAt, p.ActiveTrackersCount });
+
+            // 3. Index cho API lấy danh sách thông báo theo User (sắp xếp giảm dần theo thời gian)
+            modelBuilder.Entity<Notification>()
+                .HasIndex(n => new { n.UserId, n.CreatedAt });
         }
     }
 }
