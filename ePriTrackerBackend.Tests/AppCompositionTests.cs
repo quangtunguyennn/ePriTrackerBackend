@@ -4,9 +4,12 @@ using ePriTrackerBackend.Models.Context;
 using ePriTrackerBackend.Scraping;
 using ePriTrackerBackend.Scraping.Abstractions;
 using ePriTrackerBackend.Scraping.CellphoneS;
+using ePriTrackerBackend.Scraping.Core;
+using ePriTrackerBackend.Scraping.Gearvn;
 using ePriTrackerBackend.Scraping.Tiki;
 using ePriTrackerBackend.Services;
 using ePriTrackerBackend.Services.Events;
+using ePriTrackerBackend.Services.PriceCronJob;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -52,14 +55,16 @@ namespace ePriTrackerBackend.Tests
             Assert.NotNull(ActivatorUtilities.CreateInstance<EventController>(sp));
             Assert.NotNull(ActivatorUtilities.CreateInstance<MetricsController>(sp));
 
-            Assert.IsType<PriceCrawlerService>(sp.GetRequiredService<IPriceCrawlerService>());
-            Assert.IsType<SuggestionCrawlService>(sp.GetRequiredService<ISuggestionsCrawlerService>());
+            Assert.IsType<PriceCrawlerWorker>(sp.GetRequiredService<IPriceCrawlerWorker>());
             Assert.IsType<EventCacheService>(sp.GetRequiredService<IEventCacheService>());
             Assert.IsType<AutoEventSyncService>(sp.GetRequiredService<IAutoEventSyncService>());
 
-            // Sự kiện: Tiki do Admin quản lý, CellphoneS tự đăng
+            // Sự kiện: Tiki do Admin quản lý, CellphoneS, HACOM và GearVN tự đăng
             Assert.Equal(TikiScraper.PlatformName, sp.GetRequiredService<IEventScraper>().Platform);
-            Assert.Equal(new[] { CellphoneSScraper.PlatformName }, sp.GetServices<IAutoEventSource>().Select(s => s.Platform));
+            Assert.Equal(new[] { CellphoneSScraper.PlatformName, ePriTrackerBackend.Scraping.Hacom.HacomScraper.PlatformName, GearvnScraper.PlatformName },
+                sp.GetServices<IAutoEventSource>().Select(s => s.Platform));
+            // Một trình duyệt dùng chung cho render HTML và đọc phản hồi API của trang
+            Assert.Same(sp.GetRequiredService<IPageRenderer>(), sp.GetRequiredService<IPageResponseCapture>());
 
             // Thêm sàn mới không phải sửa service: resolver tự chọn đúng strategy theo link
             var resolver = sp.GetRequiredService<IPlatformScraperResolver>();
@@ -68,8 +73,12 @@ namespace ePriTrackerBackend.Tests
             Assert.True(resolver.TryResolve("https://cellphones.com.vn/iphone-17-256gb.html", out var cps));
             Assert.IsType<CellphoneSScraper>(cps);
 
-            // Gợi ý tìm trên Tiki (API công khai), CellphoneS (GraphQL nội bộ), HACOM; CellphoneS có thêm giá theo lô
-            Assert.Equal(new[] { TikiScraper.PlatformName, CellphoneSScraper.PlatformName, ePriTrackerBackend.Scraping.Hacom.HacomScraper.PlatformName }, resolver.SearchablePlatforms.Select(p => p.Platform));
+            Assert.True(resolver.TryResolve("https://gearvn.com/products/logitech-g502-hero", out var gearvn));
+            Assert.IsType<GearvnScraper>(gearvn);
+
+            // Gợi ý tìm trên Tiki (API công khai), CellphoneS (GraphQL nội bộ), HACOM, GearVN (HTML trang tìm kiếm); CellphoneS có thêm giá theo lô
+            Assert.Equal(new[] { TikiScraper.PlatformName, CellphoneSScraper.PlatformName, ePriTrackerBackend.Scraping.Hacom.HacomScraper.PlatformName, GearvnScraper.PlatformName },
+                resolver.SearchablePlatforms.Select(p => p.Platform));
             Assert.IsAssignableFrom<IBatchPriceScraper>(cps);
             Assert.IsType<CellphoneSApi>(sp.GetRequiredService<ICellphoneSApi>());
         }
@@ -78,8 +87,7 @@ namespace ePriTrackerBackend.Tests
         public void HangfireJobInterfaces_KeepNamespace()
         {
             // Hangfire lưu tên kiểu dưới DB – đổi tên/namespace sẽ làm job đang chờ bị lỗi "Could not load type"
-            Assert.Equal("ePriTrackerBackend.Services.IPriceCrawlerService", typeof(IPriceCrawlerService).FullName);
-            Assert.Equal("ePriTrackerBackend.Services.ISuggestionsCrawlerService", typeof(ISuggestionsCrawlerService).FullName);
+            Assert.Equal("ePriTrackerBackend.Services.PriceCronJob.IPriceCrawlerWorker", typeof(IPriceCrawlerWorker).FullName);
             Assert.Equal("ePriTrackerBackend.Services.IEventCacheService", typeof(IEventCacheService).FullName);
             Assert.Equal("ePriTrackerBackend.Services.Events.IAutoEventSyncService", typeof(IAutoEventSyncService).FullName);
         }

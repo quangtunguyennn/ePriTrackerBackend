@@ -70,7 +70,7 @@ namespace ePriTrackerBackend.Tests.Services
 
         private ProductController ControllerFor(string email, params string[] roles)
         {
-            var suggestions = new SuggestionService(new ProductRepository(_db.Context), new SuggestionRepository(_db.Context), _finder, new EfUnitOfWork(_db.Context), new SingleScraperResolver(new FakePlatformScraper()), NullLogger<SuggestionService>.Instance);
+            var suggestions = new SuggestionService(new ProductRepository(_db.Context), new SuggestionRepository(_db.Context), _finder, new EfUnitOfWork(_db.Context), new SingleScraperResolver(new FakePlatformScraper()), new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build(), NullLogger<SuggestionService>.Instance);
             var claims = new List<Claim> { new(ClaimTypes.Name, email) };
             claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
 

@@ -2,6 +2,8 @@ using ePriTrackerBackend.Repositories;
 using ePriTrackerBackend.Services;
 using ePriTrackerBackend.Services.Auth;
 using ePriTrackerBackend.Services.Events;
+using ePriTrackerBackend.Services.Notification;
+using ePriTrackerBackend.Services.PriceCronJob;
 using ePriTrackerBackend.Services.Products;
 using ePriTrackerBackend.Services.Suggestions;
 using ePriTrackerBackend.Services.YouTube;
@@ -49,7 +51,12 @@ namespace ePriTrackerBackend.Extensions
             services.AddScoped<IEventService, EventService>();
             services.AddScoped<IAutoEventSyncService, AutoEventSyncService>(); // sàn tự đăng (CellphoneS) – cũng là job "sync-auto-events-job"
 
-     
+            // Thông báo giá mục tiêu (chuông + email SMTP – cần "SmtpSettings")
+            services.AddScoped<INotificationService, NotificationService>();
+            services.AddTransient<IEmailService, EmailService>();
+
+            // Job Hangfire (giữ nguyên tên interface – Hangfire lưu tên kiểu dưới DB)
+            services.AddScoped<IPriceCrawlerWorker, PriceCrawlerWorker>(); // "adaptive-price-crawler-job" – cào theo Tier
             services.AddScoped<IEventCacheService, EventCacheService>();
 
             return services;

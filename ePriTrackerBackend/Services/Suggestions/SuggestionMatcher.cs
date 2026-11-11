@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace ePriTrackerBackend.Services.Suggestions
@@ -46,6 +47,7 @@ namespace ePriTrackerBackend.Services.Suggestions
         {
             if (string.IsNullOrWhiteSpace(productName)) return string.Empty;
 
+            productName = ToComposed(productName);
             var parts = productName.Split(SplitChars, StringSplitOptions.RemoveEmptyEntries);
 
             // Lấy phần trước dấu phân cách đầu tiên nếu đủ dài, ngược lại dùng cả tên
@@ -78,6 +80,8 @@ namespace ePriTrackerBackend.Services.Suggestions
         {
             if (string.IsNullOrWhiteSpace(originalName) || string.IsNullOrWhiteSpace(candidateName)) return false;
 
+            originalName = ToComposed(originalName);
+            candidateName = ToComposed(candidateName);
             var lowerOriginalNoMark = VietnameseText.RemoveDiacritics(originalName.ToLowerInvariant());
             var lowerCandidateNoMark = VietnameseText.RemoveDiacritics(candidateName.ToLowerInvariant());
 
@@ -98,6 +102,11 @@ namespace ePriTrackerBackend.Services.Suggestions
 
             return matched * 2 >= keywordTokens.Count;
         }
+
+        // Một số sàn (vd Tiki) trả tên ở dạng tách dấu (Unicode NFD: "ô" + dấu nặng rời U+0323). Dấu rời không phải \p{L}
+        // nên regex lọc ký tự đặc biệt cắt "chuột" thành "chuô t", từ quảng cáo có dấu cũng không khớp → gộp về dạng dựng sẵn (NFC).
+        private static string ToComposed(string text)
+            => text.IsNormalized(NormalizationForm.FormC) ? text : text.Normalize(NormalizationForm.FormC);
 
         private static IEnumerable<string> Tokenize(string text)
             => TokenSeparatorRegex.Split(text.ToLowerInvariant()).Where(t => t.Length > 0);

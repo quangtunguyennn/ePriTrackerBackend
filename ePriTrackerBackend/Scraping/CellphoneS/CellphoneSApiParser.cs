@@ -123,6 +123,91 @@ namespace ePriTrackerBackend.Scraping.CellphoneS
             }
         }
 
+        /// <summary>
+        /// Các nhóm hot sale trên trang chủ từ cùng cấu hình config_hotsale_flashsale: mỗi khoá tab (theo tab_order, bỏ flash sale)
+        /// có isActive + listGroup { "1": { groupTitle, groupUd } }. Tên = tên tab (title_if_has_fs), kèm tên nhóm nếu khác
+        /// (vd "HOT SALE CUỐI TUẦN – Phụ kiện, PC"; tab chỉ một nhóm cùng tên → "BẮT NHỊP SĂN DEAL").
+        /// </summary>
+        public static IReadOnlyList<CellphoneSHotSaleGroupRef> ParseHomeHotSaleGroups(JsonElement root)
+        {
+            var result = new List<CellphoneSHotSaleGroupRef>();
+            using var parsed = ReadConfigValue(root, out var value);
+            if (value.ValueKind != JsonValueKind.Object) return result;
+
+            var tabs = value.TryGetProperty("tab_order", out var order) && order.ValueKind == JsonValueKind.Array
+                ? order.EnumerateArray().Select(x => x.ValueKind == JsonValueKind.String ? x.GetString() : null).Where(x => x != null).ToList()
+                : value.EnumerateObject().Select(p => p.Name).ToList();
+
+            foreach (string key in tabs.Where(k => !k.StartsWith("flashSale", StringComparison.OrdinalIgnoreCase)))
+            {
+                if (!value.TryGetProperty(key, out var tab) || tab.ValueKind != JsonValueKind.Object || !GetBool(tab, "isActive")) continue;
+                if (!tab.TryGetProperty("listGroup", out var groups) || groups.ValueKind != JsonValueKind.Object) continue;
+
+                string tabTitle = GetString(tab, "title_if_has_fs") ?? GetString(tab, "title_app");
+                foreach (var entry in groups.EnumerateObject())
+                {
+                    string ud = GetString(entry.Value, "groupUd");
+                    if (string.IsNullOrWhiteSpace(ud) || result.Any(r => r.GroupUd == ud)) continue;
+
+                    string groupTitle = GetString(entry.Value, "groupTitle")?.Trim();
+                    string title = string.IsNullOrWhiteSpace(tabTitle) ? groupTitle
+                        : string.IsNullOrWhiteSpace(groupTitle) || groupTitle.Equals(tabTitle, StringComparison.OrdinalIgnoreCase) ? tabTitle
+                        : $"{tabTitle} – {groupTitle}";
+                    result.Add(new CellphoneSHotSaleGroupRef { GroupUd = ud, Title = title ?? ud });
+                }
+            }
+            return result;
+        }
+
+        /// <summary>sale_off_group(product_group_ud) { group { from_date to_date ... } groupDetails { product_id sale_price_mien_nam ... } }</summary>
+        public static CellphoneSSaleOffGroup ParseSaleOffGroup(JsonElement root)
+        {
+            var data = Data(root);
+            if (!data.TryGetProperty("sale_off_group", out var saleOff) || saleOff.ValueKind != JsonValueKind.Object) return null;
+            if (!saleOff.TryGetProperty("group", out var group) || group.ValueKind != JsonValueKind.Object) return null;
+
+            var items = new List<CellphoneSSaleOffItem>();
+            if (saleOff.TryGetProperty("groupDetails", out var details) && details.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var d in details.EnumerateArray())
+                {
+                    long id = GetLong(d, "product_id");
+                    if (id <= 0) continue;
+                    decimal south = GetDecimal(d, "sale_price_mien_nam");
+                    items.Add(new CellphoneSSaleOffItem
+                    {
+                        ProductId = id,
+                        SalePrice = south > 0 ? south : GetDecimal(d, "sale_price_mien_bac"),
+                        Note = new[] { GetString(d, "additional_text"), GetString(d, "gift") }.FirstOrDefault(t => !string.IsNullOrWhiteSpace(t))?.Trim()
+                    });
+                }
+            }
+
+            return new CellphoneSSaleOffGroup
+            {
+                Ud = GetString(group, "product_group_ud"),
+                Name = GetString(group, "product_group_name"),
+                FromDate = TryGetDate(group, "from_date", out var from) ? from : null,
+                ToDate = TryGetDate(group, "to_date", out var to) ? to : null,
+                Items = items
+            };
+        }
+
+        // value_json của dynamic_config có thể là chuỗi JSON hoặc object; trả document cần Dispose (nếu đã parse chuỗi)
+        private static JsonDocument ReadConfigValue(JsonElement root, out JsonElement value)
+        {
+            value = default;
+            var data = Data(root);
+            if (!data.TryGetProperty("dynamic_config", out var config) || config.ValueKind != JsonValueKind.Object
+                || !config.TryGetProperty("value_json", out value))
+                return null;
+
+            if (value.ValueKind != JsonValueKind.String) return null;
+            var parsed = JsonDocument.Parse(value.GetString() ?? "{}");
+            value = parsed.RootElement;
+            return parsed;
+        }
+
         /// <summary>flash_sale_groups(group_ud) { title_desktop list_program { ... } }</summary>
         public static CellphoneSFlashSaleGroup ParseFlashSaleGroup(JsonElement root)
         {

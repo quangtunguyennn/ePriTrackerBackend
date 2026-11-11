@@ -22,6 +22,12 @@ namespace ePriTrackerBackend.Scraping.CellphoneS
 
         Task<IReadOnlyList<CellphoneSFlashSaleSlot>> GetFlashSaleSlotsAsync(int programId, CancellationToken cancellationToken = default);
 
+        /// <summary>Các nhóm hot sale trên trang chủ (tab "BẮT NHỊP SĂN DEAL", "HOT SALE CUỐI TUẦN").</summary>
+        Task<IReadOnlyList<CellphoneSHotSaleGroupRef>> GetHomeHotSaleGroupsAsync(CancellationToken cancellationToken = default);
+
+        /// <returns>null nếu không có nhóm này.</returns>
+        Task<CellphoneSSaleOffGroup> GetSaleOffGroupAsync(string groupUd, CancellationToken cancellationToken = default);
+
         /// <summary>Link, giá đang bán, giá gốc của nhiều sản phẩm trong MỘT request.</summary>
         Task<IReadOnlyList<CellphoneSApiProduct>> GetProductsByIdsAsync(IReadOnlyCollection<long> productIds, CancellationToken cancellationToken = default);
 
@@ -86,6 +92,25 @@ namespace ePriTrackerBackend.Scraping.CellphoneS
 
             using var json = await PostAsync(DashboardPath, query, cancellationToken);
             return CellphoneSApiParser.ParseFlashSaleSlots(json.RootElement);
+        }
+
+        public async Task<IReadOnlyList<CellphoneSHotSaleGroupRef>> GetHomeHotSaleGroupsAsync(CancellationToken cancellationToken = default)
+        {
+            string query = $@"query D {{ dynamic_config(key: {Literal(FlashSaleConfigKey)}) {{ key is_active value_json }} }}";
+
+            using var json = await PostAsync(DashboardPath, query, cancellationToken);
+            return CellphoneSApiParser.ParseHomeHotSaleGroups(json.RootElement);
+        }
+
+        // Cùng truy vấn trang chủ dùng cho tab hot sale (ghi lại 01/11/2026); host v2 như truy vấn sản phẩm
+        public async Task<CellphoneSSaleOffGroup> GetSaleOffGroupAsync(string groupUd, CancellationToken cancellationToken = default)
+        {
+            string query = $@"query GetSaleOffGroup {{ sale_off_group(product_group_ud: {Literal(groupUd)}) {{
+                group {{ product_group_ud product_group_name from_date to_date }}
+                groupDetails {{ product_id sale_price_mien_bac sale_price_mien_nam additional_text gift }} }} }}";
+
+            using var json = await PostAsync(CatalogPath, query, cancellationToken);
+            return CellphoneSApiParser.ParseSaleOffGroup(json.RootElement);
         }
 
         public async Task<IReadOnlyList<CellphoneSApiProduct>> GetProductsByIdsAsync(IReadOnlyCollection<long> productIds, CancellationToken cancellationToken = default)

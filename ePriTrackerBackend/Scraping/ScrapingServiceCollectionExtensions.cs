@@ -1,6 +1,7 @@
 using ePriTrackerBackend.Scraping.Abstractions;
 using ePriTrackerBackend.Scraping.CellphoneS;
 using ePriTrackerBackend.Scraping.Core;
+using ePriTrackerBackend.Scraping.Gearvn;
 using ePriTrackerBackend.Scraping.Hacom;
 using ePriTrackerBackend.Scraping.Tiki;
 using ePriTrackerBackend.Services;
@@ -24,6 +25,7 @@ namespace ePriTrackerBackend.Scraping
             services.AddTikiScraper();
             services.AddCellphoneSScraper();
             services.AddHacomScraper();
+            services.AddGearvnScraper();
 
             // Bộ chọn sàn nhận tất cả IPlatformScraper đã đăng ký ở trên
             services.AddSingleton<IPlatformScraperResolver, PlatformScraperResolver>();
@@ -97,9 +99,18 @@ namespace ePriTrackerBackend.Scraping
             services.AddSingleton<IPlatformScraper>(sp => sp.GetRequiredService<CellphoneSScraper>());
 
             // Sự kiện tự đăng từ trang chủ (cần trình duyệt vì dữ liệu nạp bằng JavaScript)
-            services.TryAddSingleton<IPageRenderer, PlaywrightPageRenderer>();
+            services.AddPageRenderer();
             services.AddSingleton<IAutoEventSource, CellphoneSEventSource>();
 
+            return services;
+        }
+
+        /// <summary>Một trình duyệt Playwright dùng chung, cấp qua 2 interface: render HTML và đọc phản hồi API của trang.</summary>
+        private static IServiceCollection AddPageRenderer(this IServiceCollection services)
+        {
+            services.TryAddSingleton<PlaywrightPageRenderer>();
+            services.TryAddSingleton<IPageRenderer>(sp => sp.GetRequiredService<PlaywrightPageRenderer>());
+            services.TryAddSingleton<IPageResponseCapture>(sp => sp.GetRequiredService<PlaywrightPageRenderer>());
             return services;
         }
 
@@ -124,6 +135,44 @@ namespace ePriTrackerBackend.Scraping
 
             services.AddSingleton<HacomScraper>();
             services.AddSingleton<IPlatformScraper>(sp => sp.GetRequiredService<HacomScraper>());
+
+            // Sự kiện tự đăng: API trang /deal (gọi thẳng như trình duyệt; lỗi thì mở trang bằng Playwright), chung nhịp với trang web HACOM
+            services.AddPlatformHttpClient(HacomScraper.PlatformName, HacomEventSource.HttpClientName, client =>
+            {
+                client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+                client.DefaultRequestHeaders.Add("Accept", "application/json, text/plain, */*");
+                client.DefaultRequestHeaders.Add("Origin", "https://hacom.vn");
+                client.DefaultRequestHeaders.Add("Referer", HacomEventSource.DealPageUrl);
+            });
+            services.AddPageRenderer();
+            services.AddSingleton<IAutoEventSource, HacomEventSource>();
+
+            return services;
+        }
+
+        private static IServiceCollection AddGearvnScraper(this IServiceCollection services)
+        {
+            // Trang sản phẩm có JSON-LD (Product + Offer) → HtmlJsonLdFetchStrategy; tìm kiếm đọc HTML bằng cùng HttpClient này
+            services.AddPlatformHttpClient(GearvnScraper.PlatformName, GearvnScraper.PlatformName, client =>
+            {
+                client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+                client.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml");
+                client.DefaultRequestHeaders.Add("Accept-Language", "vi-VN,vi;q=0.9");
+            });
+
+            services.AddKeyedSingleton<IHybridFetcher>(GearvnScraper.PlatformName, (sp, _) => new HybridFetcher(
+                new IFetchStrategy[] { new HtmlJsonLdFetchStrategy(sp.GetRequiredService<IHttpClientFactory>(), GearvnScraper.PlatformName) },
+                sp.GetRequiredService<IScraperMetrics>(),
+                sp.GetRequiredService<ILogger<HybridFetcher>>()));
+
+            services.AddSingleton<GearvnScraper>();
+            services.AddSingleton<IPlatformScraper>(sp => sp.GetRequiredService<GearvnScraper>());
+
+            // Sự kiện tự đăng: chương trình khuyến mãi trang /khuyen-mai (job "sync-auto-events-job" như CellphoneS)
+            services.AddSingleton<IAutoEventSource>(sp => new GearvnEventSource(
+                sp.GetRequiredService<IHttpClientFactory>(),
+                sp.GetRequiredService<GearvnScraper>(),
+                sp.GetRequiredService<ILogger<GearvnEventSource>>()));
 
             return services;
         }

@@ -1,23 +1,32 @@
-﻿using Microsoft.EntityFrameworkCore;
-using ePriTrackerBackend.Models.Context;
-using ePriTrackerBackend.Models.Entities;
+﻿using ePriTrackerBackend.Models.Entities;
+using ePriTrackerBackend.Repositories;
 using ePriTrackerBackend.Scraping.Abstractions;
 using ePriTrackerBackend.Services.Notification;
+using ePriTrackerBackend.Services.Products;
+using Hangfire;
 
 namespace ePriTrackerBackend.Services.PriceCronJob
 {
     public interface IPriceCrawlerWorker
     {
+        /// <summary>
+        /// Job "adaptive-price-crawler-job" (mỗi phút): cào các sản phẩm đến hạn theo Tier.
+        /// Filter Hangfire đặt ở interface vì job đăng ký theo interface (Hangfire đọc attribute trên method của kiểu đã đăng ký).
+        /// </summary>
+        [DisableConcurrentExecution(timeoutInSeconds: 600)] // lượt trước chưa xong → lượt sau chờ, không cào trùng / gửi thông báo trùng
+        [AutomaticRetry(Attempts = 0)]                      // lỗi thì để lượt phút sau làm, không retry dồn
         Task ProcessPendingProductsAsync(CancellationToken cancellationToken = default);
     }
 
+    /// <summary>
+    /// Cào giá theo Tier: mỗi lượt lấy tối đa <see cref="BatchSize"/> sản phẩm đến hạn (NextCrawlAt), cập nhật giá theo đúng quy tắc
+    /// của job cũ (lấy theo lô trước, hết hàng giữ giá, mô tả, giá ban đầu) rồi hẹn lần cào sau theo khoảng cách giá – mục tiêu.
+    /// </summary>
     public class PriceCrawlerWorker : IPriceCrawlerWorker
     {
-        private readonly ePriTrackerContext _dbContext;
-        private readonly IPlatformScraperResolver _scrapers;
-        private readonly INotificationService _notificationService;
-        private readonly ILogger<PriceCrawlerWorker> _logger;
         private const int BatchSize = 50;
+        private const int FetchChunkSize = 5; // cào lẻ song song (giới hạn tốc độ theo sàn nằm ở tầng HttpClient)
+        private static readonly TimeSpan RetryAfterError = TimeSpan.FromMinutes(30);
 
         private static readonly TimeZoneInfo VietnamTz = GetVietnamTimeZone();
 
@@ -29,160 +38,276 @@ namespace ePriTrackerBackend.Services.PriceCronJob
 
         private static DateTimeOffset GetNowVn() => TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, VietnamTz);
 
+        private readonly IProductRepository _products;
+        private readonly IPriceHistoryRepository _priceHistory;
+        private readonly ITrackedItemRepository _trackedItems;
+        private readonly IUnitOfWork _unitOfWork;
+        private readonly IPlatformScraperResolver _scrapers;
+        private readonly INotificationService _notifications;
+        private readonly ILogger<PriceCrawlerWorker> _logger;
+
         public PriceCrawlerWorker(
-            ePriTrackerContext dbContext,
+            IProductRepository products,
+            IPriceHistoryRepository priceHistory,
+            ITrackedItemRepository trackedItems,
+            IUnitOfWork unitOfWork,
             IPlatformScraperResolver scrapers,
-            INotificationService notificationService,
+            INotificationService notifications,
             ILogger<PriceCrawlerWorker> logger)
         {
-            _dbContext = dbContext;
-            _scrapers = scrapers;
-            _notificationService = notificationService;
-            _logger = logger;
+            _products = products ?? throw new ArgumentNullException(nameof(products));
+            _priceHistory = priceHistory ?? throw new ArgumentNullException(nameof(priceHistory));
+            _trackedItems = trackedItems ?? throw new ArgumentNullException(nameof(trackedItems));
+            _unitOfWork = unitOfWork ?? throw new ArgumentNullException(nameof(unitOfWork));
+            _scrapers = scrapers ?? throw new ArgumentNullException(nameof(scrapers));
+            _notifications = notifications ?? throw new ArgumentNullException(nameof(notifications));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
         public async Task ProcessPendingProductsAsync(CancellationToken cancellationToken = default)
         {
-            var nowVn = GetNowVn();
+            var startedAt = GetNowVn();
+            var products = await _products.GetDueForCrawlAsync(startedAt, BatchSize, cancellationToken);
 
-            _logger.LogInformation("==========================================================================================");
-            _logger.LogInformation("🚀 [CRAWLER START] [{Timestamp:yyyy-MM-dd HH:mm:ss} ICT] Bắt đầu mẻ cào giá mới...", nowVn);
-
-            // 1. Quét DB theo Giờ VN
-            var products = await _dbContext.Product
-                .Where(p => p.NextCrawlAt <= nowVn && p.ActiveTrackersCount > 0)
-                .OrderBy(p => p.NextCrawlAt)
-                .Take(BatchSize)
-                .ToListAsync(cancellationToken);
-
-            if (!products.Any())
+            if (products.Count == 0)
             {
-                _logger.LogInformation("💤 [CRAWLER IDLE] [{Timestamp:yyyy-MM-dd HH:mm:ss} ICT] Không có sản phẩm nào đến hạn quét.", GetNowVn());
-                _logger.LogInformation("==========================================================================================");
+                _logger.LogDebug("💤 [CRAWLER IDLE] Không có sản phẩm nào đến hạn quét.");
                 return;
             }
 
-            _logger.LogInformation("📦 [BATCH INFO] Đã bốc {Count} sản phẩm đến hạn xử lý.", products.Count);
+            _logger.LogInformation("🚀 [CRAWLER START] {Count} sản phẩm đến hạn quét.", products.Count);
 
-            int successCount = 0;
-            int failedCount = 0;
-            int priceChangedCount = 0;
-            int priceDropCount = 0;
+            // Sàn hỗ trợ lấy giá theo lô (vd CellphoneS qua API): vài request cho cả lượt.
+            // Sản phẩm không có trong kết quả lô → cào lẻ (JSON-LD / API Tiki) bên dưới.
+            var batchResults = await FetchBatchPricesAsync(products, cancellationToken);
 
-            for (int i = 0; i < products.Count; i++)
+            int priceChanges = 0, priceDrops = 0, outOfStock = 0, failed = 0;
+            var chunks = products.Chunk(FetchChunkSize).ToList();
+
+            for (int c = 0; c < chunks.Count; c++)
             {
-                var product = products[i];
-                int itemIndex = i + 1;
+                var chunk = chunks[c];
+                var toFetch = chunk.Where(p => !batchResults.ContainsKey(p.ProductId)).ToList();
+                var fetched = (await Task.WhenAll(toFetch.Select(async product => (product.ProductId, Scraped: await FetchCurrentAsync(product.ProductLink, cancellationToken)))))
+                    .ToDictionary(x => x.ProductId, x => x.Scraped);
 
-                if (!_scrapers.TryResolve(product.ProductLink, out var scraper))
+                _firstPrices.Clear();
+                var now = GetNowVn();
+
+                foreach (var product in chunk)
                 {
-                    _logger.LogWarning("⚠️ [{Index}/{Total}] [NO SCRAPER] ProductId: {ProductId} | Link: {Link}",
-                        itemIndex, products.Count, product.ProductId, product.ProductLink);
-                    failedCount++;
-                    continue;
+                    ScrapedProduct scraped;
+                    if (batchResults.TryGetValue(product.ProductId, out var batch))
+                    {
+                        scraped = batch.Product;
+                        if (!string.IsNullOrEmpty(batch.PlatformProductId) && batch.PlatformProductId != product.PlatformProductId)
+                            product.PlatformProductId = batch.PlatformProductId; // lần sau khỏi tra mã
+                    }
+                    else
+                    {
+                        scraped = fetched.GetValueOrDefault(product.ProductId);
+                    }
+
+                    // Lỗi mạng / bị chặn / sàn chưa hỗ trợ → giữ nguyên giá, không kết luận là hết hàng; hẹn lại để khỏi chiếm chỗ mỗi phút
+                    if (scraped == null)
+                    {
+                        product.NextCrawlAt = now.Add(RetryAfterError);
+                        failed++;
+                        continue;
+                    }
+
+                    decimal oldPrice = product.LatestPrice ?? 0;
+                    var outcome = ApplyScrapeResult(product, scraped, now);
+                    ApplyDescription(product, scraped); // kết quả lô không có mô tả → giữ bản cũ
+
+                    if (outcome == ScrapeOutcome.PriceChanged)
+                    {
+                        priceChanges++;
+                        if (oldPrice > 0 && product.LatestPrice < oldPrice)
+                        {
+                            priceDrops++;
+                            await _notifications.ProcessPriceDropNotificationsAsync(product, product.LatestPrice.Value);
+                        }
+                    }
+                    if (!product.IsInStock) outOfStock++;
+
+                    ScheduleNextCrawl(product, now);
+                }
+
+                // Luôn lưu: dù giá không đổi thì lịch cào (NextCrawlAt) cũng đã đổi
+                await _unitOfWork.SaveChangesAsync();
+
+                // Sản phẩm thêm lúc hết hàng vừa có giá lần đầu → đó là giá ban đầu của những ai đang theo dõi
+                foreach (var (productId, price) in _firstPrices)
+                    await _trackedItems.FillMissingInitialPriceAsync(productId, price);
+
+                // Delay ngẫu nhiên giữa các nhóm để tránh kích hoạt WAF – chỉ khi nhóm này có gửi request lẻ và còn nhóm sau
+                if (toFetch.Count > 0 && c < chunks.Count - 1)
+                    await Task.Delay(Random.Shared.Next(1500, 3000), cancellationToken);
+            }
+
+            _logger.LogInformation(
+                "✅ [CRAWLER FINISHED] {Total} sản phẩm ({Batched} lấy theo lô) trong {Seconds:F1}s: {Changed} đổi giá, {Drops} giảm giá, {OutOfStock} hết hàng, {Failed} lỗi.",
+                products.Count, batchResults.Count, (GetNowVn() - startedAt).TotalSeconds, priceChanges, priceDrops, outOfStock, failed);
+        }
+
+        /// <summary>
+        /// Phân Tier theo khoảng cách giữa giá hiện tại và giá mục tiêu cao nhất (của mọi người theo dõi), trả về chu kỳ quét.
+        /// 0: đã chạm mục tiêu (30 phút) · 1: cách ≤ 5% hoặc > 50 người theo dõi (1 giờ) · 2: cách ≤ 15% hoặc > 20 người, hoặc chưa ai đặt mục tiêu (1–2 giờ)
+        /// · 3: xa mục tiêu (24 giờ) · 4: không còn ai theo dõi (30 ngày).
+        /// </summary>
+        public static (int Tier, int IntervalMinutes) CalculateTier(decimal latestPrice, decimal? maxTargetPrice, int activeTrackers)
+        {
+            if (activeTrackers <= 0) return (4, 43200);
+
+            if (!maxTargetPrice.HasValue || maxTargetPrice <= 0 || latestPrice <= 0)
+                return (2, activeTrackers > 10 ? 60 : 120);
+
+            decimal priceGap = (latestPrice - maxTargetPrice.Value) / latestPrice;
+
+            if (priceGap <= 0) return (0, 30);
+            if (priceGap <= 0.05m || activeTrackers > 50) return (1, 60);
+            if (priceGap <= 0.15m || activeTrackers > 20) return (2, 240);
+            return (3, 1440);
+        }
+
+        private static void ScheduleNextCrawl(Product product, DateTimeOffset now)
+        {
+            var (tier, interval) = CalculateTier(product.LatestPrice ?? 0, product.MaxTargetPrice, product.ActiveTrackersCount);
+            product.CurrentTier = tier;
+            product.CrawlIntervalMinutes = interval;
+            product.NextCrawlAt = now.AddMinutes(interval);
+        }
+
+        /// <summary>
+        /// Gom sản phẩm theo sàn có <see cref="IBatchPriceScraper"/> và lấy giá theo lô. Sàn lỗi toàn bộ → bỏ qua (cào lẻ dự phòng).
+        /// </summary>
+        /// <returns>Kết quả theo ProductId.</returns>
+        private async Task<Dictionary<Guid, BatchPriceResult>> FetchBatchPricesAsync(IReadOnlyCollection<Product> products, CancellationToken cancellationToken)
+        {
+            var results = new Dictionary<Guid, BatchPriceResult>();
+
+            var byPlatform = products
+                .Select(p => (Product: p, Scraper: _scrapers.TryResolve(p.ProductLink, out var s) ? s as IBatchPriceScraper : null))
+                .Where(x => x.Scraper != null)
+                .GroupBy(x => x.Scraper);
+
+            foreach (var group in byPlatform)
+            {
+                var scraper = group.Key;
+                var requests = new List<BatchPriceRequest>();
+                var productsByUrl = new Dictionary<string, List<Product>>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var (product, _) in group)
+                {
+                    if (!scraper.TryNormalizeProductUrl(product.ProductLink, out var url)) continue;
+                    if (!productsByUrl.TryGetValue(url, out var list))
+                    {
+                        productsByUrl[url] = list = new List<Product>();
+                        requests.Add(new BatchPriceRequest { ProductUrl = url, PlatformProductId = product.PlatformProductId });
+                    }
+                    list.Add(product);
                 }
 
                 try
                 {
-                    var scrapedData = await scraper.GetProductAsync(product.ProductLink);
-                    decimal oldPrice = product.LatestPrice ?? 0;
-                    decimal newPrice = scrapedData.Price ?? 0;
-                    var currentVn = GetNowVn();
-
-                    bool isPriceChanged = newPrice > 0 && newPrice != oldPrice;
-                    bool isPriceDrop = newPrice > 0 && oldPrice > 0 && newPrice < oldPrice;
-
-                    var (tier, interval, nextCrawlVn) = CalculateNextCrawl(newPrice, product.MaxTargetPrice, product.ActiveTrackersCount);
-
-                    if (isPriceDrop)
+                    var prices = await scraper.GetCurrentPricesAsync(requests, cancellationToken);
+                    foreach (var (url, price) in prices)
                     {
-                        decimal diff = oldPrice - newPrice;
-                        _logger.LogInformation("🔥 [{Index}/{Total}] [PRICE DROP] ProductId: {ProductId} | Name: \"{ProductName}\" | Giá cũ: {OldPrice:N0}đ ➔ Giá mới: {NewPrice:N0}đ (Giảm {Diff:N0}đ) | Tier mới: {Tier} (Next: {NextCrawl:HH:mm:ss dd/MM})",
-                            itemIndex, products.Count, product.ProductId, product.ProductName, oldPrice, newPrice, diff, tier, nextCrawlVn);
-
-                        await _notificationService.ProcessPriceDropNotificationsAsync(_dbContext, product, newPrice);
-                        priceDropCount++;
-                        priceChangedCount++;
-                    }
-                    else if (isPriceChanged)
-                    {
-                        string direction = newPrice > oldPrice ? "Tăng" : "Thay đổi";
-                        _logger.LogInformation("📈 [{Index}/{Total}] [PRICE CHANGE] ProductId: {ProductId} | Name: \"{ProductName}\" | Giá cũ: {OldPrice:N0}đ ➔ Giá mới: {NewPrice:N0}đ ({Direction}) | Tier mới: {Tier} (Next: {NextCrawl:HH:mm:ss dd/MM})",
-                            itemIndex, products.Count, product.ProductId, product.ProductName, oldPrice, newPrice, direction, tier, nextCrawlVn);
-
-                        priceChangedCount++;
-                    }
-                    else
-                    {
-                        _logger.LogInformation("➡️ [{Index}/{Total}] [UNCHANGED] ProductId: {ProductId} | Name: \"{ProductName}\" | Giữ nguyên: {Price:N0}đ | Tier mới: {Tier} (Next: {NextCrawl:HH:mm:ss dd/MM})",
-                            itemIndex, products.Count, product.ProductId, product.ProductName, newPrice, tier, nextCrawlVn);
+                        if (!productsByUrl.TryGetValue(url, out var list)) continue;
+                        foreach (var product in list) results[product.ProductId] = price;
                     }
 
-                    if (isPriceChanged)
-                    {
-                        _dbContext.PriceHistory.Add(new PriceHistory
-                        {
-                            ProductId = product.ProductId,
-                            Price = newPrice,
-                            CheckedAt = currentVn // Giờ VN
-                        });
-                    }
-
-                    // Lưu toàn bộ mốc thời gian Entity theo Giờ VN (+07:00)
-                    product.LatestPrice = newPrice;
-                    product.LastUpdatedAt = currentVn; // Giờ VN
-                    product.IsInStock = scrapedData.IsInStock;
-                    product.OutOfStockSince = scrapedData.IsInStock ? null : (product.OutOfStockSince ?? currentVn); // Giờ VN
-                    product.CurrentTier = tier;
-                    product.CrawlIntervalMinutes = interval;
-                    product.NextCrawlAt = nextCrawlVn; // Giờ VN
-
-                    _dbContext.Product.Update(product);
-                    successCount++;
+                    _logger.LogInformation("📦 {Platform}: {Got}/{Total} sản phẩm lấy giá theo lô.", scraper.Platform, prices.Count, requests.Count);
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
                 {
-                    failedCount++;
-                    _logger.LogError(ex, "❌ [{Index}/{Total}] [ERROR] ProductId: {ProductId} | Name: \"{ProductName}\" | Lỗi cào giá! Đẩy NextCrawlAt +30p.",
-                        itemIndex, products.Count, product.ProductId, product.ProductName);
-
-                    product.NextCrawlAt = GetNowVn().AddMinutes(30); // Giờ VN
-                    _dbContext.Product.Update(product);
+                    _logger.LogWarning(ex, "⚠️ Lấy giá theo lô trên {Platform} lỗi – chuyển sang cào từng sản phẩm.", scraper.Platform);
                 }
             }
 
-            await _dbContext.SaveChangesAsync(cancellationToken);
-
-            var endVn = GetNowVn();
-            var duration = (endVn - nowVn).TotalSeconds;
-
-            _logger.LogInformation("------------------------------------------------------------------------------------------");
-            _logger.LogInformation("✅ [CRAWLER FINISHED] [{Timestamp:yyyy-MM-dd HH:mm:ss} ICT] | Tổng thời gian: {Duration:F2}s", endVn, duration);
-            _logger.LogInformation("📊 [SUMMARY] Tổng cào: {Total} | Thành công: {Success} | Thất bại: {Failed} | Giá biến động: {Changed} | Giảm giá: {Drop}",
-                products.Count, successCount, failedCount, priceChangedCount, priceDropCount);
-            _logger.LogInformation("==========================================================================================");
+            return results;
         }
 
-        private (int NewTier, int IntervalMinutes, DateTimeOffset NextCrawlAt) CalculateNextCrawl(decimal latestPrice, decimal? maxTargetPrice, int activeTrackers)
+        private enum ScrapeOutcome { Unchanged, StockChanged, PriceChanged }
+
+        // Sản phẩm có giá lần đầu trong nhóm đang xử lý (xem ApplyScrapeResult)
+        private readonly List<(Guid ProductId, decimal Price)> _firstPrices = new();
+
+        /// <summary>
+        /// Áp quy tắc đã thống nhất:
+        /// - Hết hàng: GIỮ giá gần nhất, không ghi lịch sử giá, đánh dấu hết hàng (ghi thời điểm). Không tự bỏ theo dõi.
+        /// - Còn hàng: cập nhật giá như cũ, bỏ nhãn hết hàng. Giá thật đầu tiên của sản phẩm thêm lúc chưa có giá → làm giá ban đầu.
+        /// </summary>
+        private ScrapeOutcome ApplyScrapeResult(Product product, ScrapedProduct scraped, DateTimeOffset now)
         {
-            var nowVn = GetNowVn(); // Giờ VN
-
-            if (activeTrackers <= 0)
-                return (4, 43200, nowVn.AddDays(30));
-
-            if (!maxTargetPrice.HasValue || maxTargetPrice <= 0 || latestPrice <= 0)
+            if (!scraped.IsInStock)
             {
-                int defaultMinutes = activeTrackers > 10 ? 60 : 120;
-                return (2, defaultMinutes, nowVn.AddMinutes(defaultMinutes));
+                if (!product.IsInStock) return ScrapeOutcome.Unchanged;
+
+                product.IsInStock = false;
+                product.OutOfStockSince = now;
+                return ScrapeOutcome.StockChanged;
             }
 
-            decimal priceGap = (latestPrice - maxTargetPrice.Value) / latestPrice;
+            decimal price = scraped.Price.Value; // IsInStock bảo đảm Price > 0
+            var outcome = ScrapeOutcome.Unchanged;
 
-            if (priceGap <= 0) return (0, 30, nowVn.AddMinutes(30));
-            if (priceGap <= 0.05m || activeTrackers > 50) return (1, 60, nowVn.AddHours(1));
-            if (priceGap <= 0.15m || activeTrackers > 20) return (2, 240, nowVn.AddHours(4));
+            if (!product.IsInStock)
+            {
+                product.IsInStock = true;
+                product.OutOfStockSince = null;
+                product.LastUpdatedAt = now;
+                outcome = ScrapeOutcome.StockChanged;
+            }
 
-            return (3, 1440, nowVn.AddHours(24));
+            // Thêm lúc chưa có giá (hết hàng) → giá thật đầu tiên là giá ban đầu (giá ban đầu lưu theo từng người ở bảng Item)
+            if ((product.LatestPrice ?? 0) <= 0)
+                _firstPrices.Add((product.ProductId, price));
+
+            if (price != product.LatestPrice)
+            {
+                product.LatestPrice = price;
+                product.LastUpdatedAt = now;
+                _priceHistory.Add(new PriceHistory { ProductId = product.ProductId, Price = price, CheckedAt = now });
+                outcome = ScrapeOutcome.PriceChanged;
+            }
+
+            return outcome;
+        }
+
+        /// <summary>
+        /// Mô tả mới (đã lọc) khác bản đang lưu → cập nhật (kể cả khi hết hàng). Sàn không trả mô tả → giữ bản cũ.
+        /// Không ghi lịch sử giá, không đổi LastUpdatedAt (đó là thời điểm đổi giá).
+        /// </summary>
+        private static void ApplyDescription(Product product, ScrapedProduct scraped)
+        {
+            string description = ProductDescription.Sanitize(scraped.Description);
+            if (description.Length > 0 && description != product.Description)
+                product.Description = description;
+        }
+
+        /// <summary>
+        /// Chọn đúng sàn theo link rồi lấy dữ liệu hiện tại. Link không thuộc sàn nào / không có ID / lỗi mạng → null (bỏ qua).
+        /// </summary>
+        private async Task<ScrapedProduct> FetchCurrentAsync(string productUrl, CancellationToken cancellationToken)
+        {
+            if (!_scrapers.TryResolve(productUrl, out var scraper) || !scraper.TryNormalizeProductUrl(productUrl, out _))
+            {
+                _logger.LogWarning("⚠️ Sàn chưa hỗ trợ hoặc link không hợp lệ: {Url}", productUrl);
+                return null;
+            }
+
+            try
+            {
+                // Bên trong scraper là Dual-Layer (tất cả chiến lược thất bại → ném lỗi → catch bên dưới trả null)
+                return await scraper.GetProductAsync(productUrl, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning("⚠️ Không thể lấy dữ liệu từ {Platform} cho link {Url}: {Message}", scraper.Platform, productUrl, ex.Message);
+                return null;
+            }
         }
     }
 }

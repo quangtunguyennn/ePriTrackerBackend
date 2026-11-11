@@ -9,7 +9,7 @@ using Microsoft.Extensions.Logging;
 namespace ePriTrackerBackend.Scraping.Core
 {
     /// <summary>
-    /// Đọc danh sách sản phẩm từ HTML trang tìm kiếm của các sàn không có API JSON (CellphoneS, HACOM).
+    /// Đọc danh sách sản phẩm từ HTML trang tìm kiếm của các sàn không có API JSON (HACOM, GearVN).
     /// Không phụ thuộc class CSS của từng sàn. Đi từ GIÁ: tìm các phần tử chứa giá tiền, với mỗi phần tử leo lên
     /// thẻ cha nhỏ nhất có chứa link trang sản phẩm (do scraper của sàn nhận diện) = "thẻ sản phẩm",
     /// rồi lấy tên / giá / ảnh trong thẻ đó. Thẻ thiếu tên hoặc giá bị bỏ.
@@ -36,6 +36,19 @@ namespace ePriTrackerBackend.Scraping.Core
         {
             "old", "del", "regular", "origin", "original", "through", "strike", "install", "installment", "tragop", "compare"
         };
+
+        // Token trong class CSS của chữ GẠCH NGANG (giá gốc): Tailwind "line-through", "old-price", "price-del"...
+        // – bỏ khi đọc chữ hiển thị như thẻ <del>/<s> (HACOM gạch giá bằng CSS, không dùng <del>)
+        private static readonly HashSet<string> StrikeThroughTokens = new(StringComparer.OrdinalIgnoreCase) { "through", "strike", "del", "old" };
+
+        // Thuộc tính title là chữ của nút bấm, không phải tên sản phẩm
+        private static readonly HashSet<string> CallToActionTitles = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "Xem chi tiết", "Chi tiết", "Xem thêm", "Mua ngay", "Thêm vào giỏ", "Thêm vào giỏ hàng", "So sánh", "Xem nhanh"
+        };
+
+        // "Mã: MELO0271", "SKU: ABC" – nhãn mã hàng đặt trong thẻ tiêu đề
+        private static readonly Regex CodeLabelRegex = new(@"^(mã|ma|sku|code)\s*(sp|sản phẩm)?\s*[:#]", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly string[] ImageAttributes = { "data-src", "data-lazy-src", "data-original", "src" };
         private static readonly string[] ImagePlaceholderHints = { "placeholder", "placehoder", "loading", "blank" };
@@ -169,11 +182,15 @@ namespace ePriTrackerBackend.Scraping.Core
             Dictionary<HtmlNode, (string Url, string ExternalId)> productByAnchor,
             Uri baseUri)
         {
-            var productAnchors = card.DescendantsAndSelf()
+            // Tên/ảnh có thể nằm ngoài phần tử chứa giá (HACOM: giá trong một <a>, tên trong <a> khác cùng thẻ) → tìm trong
+            // phạm vi rộng hơn: leo lên tối đa MaxNameScopeLevels cấp, chừng nào cấp cha chỉ chứa link của CÙNG sản phẩm này.
+            var scope = ExpandToSameProduct(card, url, productByAnchor);
+
+            var productAnchors = scope.DescendantsAndSelf()
                 .Where(n => n.Name == "a" && productByAnchor.TryGetValue(n, out var p) && string.Equals(p.Url, url, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
-            string name = FindName(card, productAnchors);
+            string name = FindName(scope, productAnchors);
             decimal? price = FindPrice(card);
             if (string.IsNullOrEmpty(name) || price == null) return null;
 
@@ -182,9 +199,29 @@ namespace ePriTrackerBackend.Scraping.Core
                 ExternalId = externalId,
                 Name = name,
                 Price = price,
-                ImageUrl = FindImage(card, productAnchors, baseUri),
+                ImageUrl = FindImage(scope, productAnchors, baseUri),
                 Url = url
             };
+        }
+
+        private const int MaxNameScopeLevels = 3;
+
+        private static HtmlNode ExpandToSameProduct(HtmlNode card, string url, Dictionary<HtmlNode, (string Url, string ExternalId)> productByAnchor)
+        {
+            var scope = card;
+            for (int i = 0; i < MaxNameScopeLevels; i++)
+            {
+                var parent = scope.ParentNode;
+                if (parent == null || parent.NodeType == HtmlNodeType.Document || parent.Name is "body" or "html") break;
+
+                bool onlyThisProduct = parent.Descendants("a")
+                    .Where(productByAnchor.ContainsKey)
+                    .All(a => string.Equals(productByAnchor[a].Url, url, StringComparison.OrdinalIgnoreCase));
+                if (!onlyThisProduct) break;
+
+                scope = parent;
+            }
+            return scope;
         }
 
         // ---------- Phần tử giá ----------
@@ -227,33 +264,48 @@ namespace ePriTrackerBackend.Scraping.Core
 
         private static string FindName(HtmlNode card, List<HtmlNode> productAnchors)
         {
-            // 1) thuộc tính title của link sản phẩm
+            // 1) thuộc tính title của link sản phẩm hoặc phần tử bên trong link (HACOM: <a title="Xem chi tiết"><h3 title="Tên thật">),
+            //    bỏ chữ của nút bấm
             foreach (var a in productAnchors)
             {
-                var title = Clean(a.GetAttributeValue("title", ""));
-                if (title.Length >= MinNameLength) return title;
+                var title = a.DescendantsAndSelf()
+                    .Select(n => Clean(n.GetAttributeValue("title", "")))
+                    .FirstOrDefault(t => t.Length >= MinNameLength && !CallToActionTitles.Contains(t));
+                if (title != null) return title;
             }
 
-            // 2) thẻ tiêu đề trong card
-            var heading = card.DescendantsAndSelf().FirstOrDefault(n => n.Name is "h1" or "h2" or "h3" or "h4");
-            if (heading != null)
-            {
-                var text = Clean(heading.InnerText);
-                if (text.Length >= MinNameLength) return text;
-            }
+            // 2) thẻ tiêu đề – ưu tiên nằm trong link sản phẩm; bỏ nhãn mã hàng ("Mã: MELO0271")
+            var heading = productAnchors.SelectMany(a => a.Descendants()).Concat(card.DescendantsAndSelf())
+                .Where(n => n.Name is "h1" or "h2" or "h3" or "h4")
+                .Select(n => Clean(n.InnerText))
+                .FirstOrDefault(t => t.Length >= MinNameLength && !CodeLabelRegex.IsMatch(t));
+            if (heading != null) return heading;
 
-            // 3) chữ trong link (bỏ phần giá nếu link bọc cả card)
+            // 3) phần tử lá có class chứa từ "name"/"title" (vd GearVN: <p class="product-card-name">) – thẻ link bọc cả card
+            //    nên chữ trong link lẫn nhãn "Giảm 15%", màu sắc... Đặt sau tiêu đề để sàn đã dùng h3 (HACOM) không đổi.
+            var named = card.Descendants()
+                .Where(n => n.NodeType == HtmlNodeType.Element && HasNameClass(n) && !n.Descendants().Any(HasNameClass))
+                .Select(n => Clean(n.InnerText))
+                .FirstOrDefault(t => t.Length >= MinNameLength && ParsePrice(t) == null);
+            if (named != null) return named;
+
+            // 4) chữ trong link (bỏ phần giá nếu link bọc cả card)
             var anchorText = productAnchors
                 .Select(a => Clean(PriceRegex.Replace(a.InnerText ?? "", " ")))
                 .OrderByDescending(t => t.Length)
                 .FirstOrDefault();
             if (anchorText != null && anchorText.Length >= MinNameLength) return anchorText;
 
-            // 4) alt của ảnh
+            // 5) alt của ảnh
             return card.DescendantsAndSelf("img")
                 .Select(i => Clean(i.GetAttributeValue("alt", "")))
                 .FirstOrDefault(t => t.Length >= MinNameLength) ?? "";
         }
+
+        private static bool HasNameClass(HtmlNode node)
+            => node.NodeType == HtmlNodeType.Element
+               && ClassTokenSplitRegex.Split(node.GetAttributeValue("class", ""))
+                   .Any(t => t.Equals("name", StringComparison.OrdinalIgnoreCase) || t.Equals("title", StringComparison.OrdinalIgnoreCase));
 
         // ---------- Giá ----------
 
@@ -309,6 +361,7 @@ namespace ePriTrackerBackend.Scraping.Core
         private static void AppendText(HtmlNode node, StringBuilder sb)
         {
             if (node.Name is "script" or "style" or "del" or "s" or "strike") return;
+            if (node.NodeType == HtmlNodeType.Element && ClassTokenSplitRegex.Split(node.GetAttributeValue("class", "")).Any(StrikeThroughTokens.Contains)) return;
 
             if (node.NodeType == HtmlNodeType.Text)
             {

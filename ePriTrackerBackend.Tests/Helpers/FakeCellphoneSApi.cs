@@ -48,6 +48,26 @@ namespace ePriTrackerBackend.Tests.Helpers
             return Task.FromResult<IReadOnlyList<CellphoneSFlashSaleSlot>>(Slots.TryGetValue(programId, out var s) ? s : new List<CellphoneSFlashSaleSlot>());
         }
 
+        public List<CellphoneSHotSaleGroupRef> HotSaleGroups { get; } = new();
+        public Dictionary<string, CellphoneSSaleOffGroup> SaleOffGroups { get; } = new();
+
+        /// <summary>Chỉ API hot sale lỗi (flash sale vẫn chạy).</summary>
+        public Exception? HotSaleFailure { get; set; }
+
+        public Task<IReadOnlyList<CellphoneSHotSaleGroupRef>> GetHomeHotSaleGroupsAsync(CancellationToken cancellationToken = default)
+        {
+            ThrowIfFailing();
+            if (HotSaleFailure != null) throw HotSaleFailure;
+            return Task.FromResult<IReadOnlyList<CellphoneSHotSaleGroupRef>>(HotSaleGroups);
+        }
+
+        public Task<CellphoneSSaleOffGroup> GetSaleOffGroupAsync(string groupUd, CancellationToken cancellationToken = default)
+        {
+            ThrowIfFailing();
+            if (HotSaleFailure != null) throw HotSaleFailure;
+            return Task.FromResult(SaleOffGroups.GetValueOrDefault(groupUd)!);
+        }
+
         public Task<IReadOnlyList<CellphoneSApiProduct>> GetProductsByIdsAsync(IReadOnlyCollection<long> productIds, CancellationToken cancellationToken = default)
         {
             ThrowIfFailing();

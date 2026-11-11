@@ -10,12 +10,10 @@ namespace ePriTrackerBackend.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.AddColumn<string>(
-                name: "PlatformProductId",
-                table: "Product",
-                type: "nvarchar(50)",
-                maxLength: 50,
-                nullable: true);
+            // Có DB đã thêm cột bằng tay mà không ghi lịch sử migration → chỉ thêm khi chưa có
+            migrationBuilder.Sql(@"
+IF COL_LENGTH('Product', 'PlatformProductId') IS NULL
+    ALTER TABLE [Product] ADD [PlatformProductId] nvarchar(50) NULL;");
         }
 
         /// <inheritdoc />

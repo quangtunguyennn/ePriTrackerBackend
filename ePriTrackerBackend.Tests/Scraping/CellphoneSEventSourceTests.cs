@@ -76,6 +76,75 @@ namespace ePriTrackerBackend.Tests.Scraping
         private static CellphoneSEventSource Source(FakeCellphoneSApi api, FakeRenderer renderer, FixedTime time)
             => new(api, renderer, NullLogger<CellphoneSEventSource>.Instance, time);
 
+        // Hot sale "Phụ kiện, PC" chạy 23/10 – 22h 24/10; "Gia dụng" đã hết hạn lúc 20h 24/10
+        private static FakeCellphoneSApi WithHotSales(FakeCellphoneSApi api)
+        {
+            api.HotSaleGroups.Add(new CellphoneSHotSaleGroupRef { GroupUd = "pk_flash_sale", Title = "HOT SALE CUỐI TUẦN – Phụ kiện, PC" });
+            api.HotSaleGroups.Add(new CellphoneSHotSaleGroupRef { GroupUd = "hotsale_gia_dung", Title = "HOT SALE CUỐI TUẦN – Gia dụng, Điện máy" });
+            api.HotSaleGroups.Add(new CellphoneSHotSaleGroupRef { GroupUd = "chua_cau_hinh", Title = "Không có nhóm" });
+            api.SaleOffGroups["pk_flash_sale"] = new CellphoneSSaleOffGroup
+            {
+                Ud = "pk_flash_sale",
+                FromDate = new(2026, 10, 23, 0, 0, 0, Vn),
+                ToDate = new(2026, 10, 24, 22, 0, 0, Vn),
+                Items = new[]
+                {
+                    new CellphoneSSaleOffItem { ProductId = 10, SalePrice = 6690000, Note = "Tặng túi chống sốc" },
+                    new CellphoneSSaleOffItem { ProductId = 11, SalePrice = 0 },   // không có giá hot sale → giá đang bán
+                    new CellphoneSSaleOffItem { ProductId = 12, SalePrice = 100 }  // không tra được link
+                }
+            };
+            api.SaleOffGroups["hotsale_gia_dung"] = new CellphoneSSaleOffGroup
+            {
+                Ud = "hotsale_gia_dung",
+                FromDate = new(2026, 10, 23, 0, 0, 0, Vn),
+                ToDate = new(2026, 10, 24, 20, 0, 0, Vn),
+                Items = new[] { new CellphoneSSaleOffItem { ProductId = 20, SalePrice = 1 } }
+            };
+            api.Catalog[10] = FakeCellphoneSApi.Product(10, "ban-phim-co-akko", 7290000, 7990000);
+            api.Catalog[11] = FakeCellphoneSApi.Product(11, "chuot-logitech-g502", 990000, 1290000);
+            api.Catalog[20] = FakeCellphoneSApi.Product(20, "noi-chien", 2, 3);
+            return api;
+        }
+
+        [Fact]
+        public async Task HotSale_RunningGroupsBecomeEvents_WithSalePriceAndExactEnd()
+        {
+            var events = await Source(WithHotSales(ApiWithFlashSale()), new FakeRenderer(), new FixedTime { Now = During }).GetLiveEventsAsync();
+
+            var hot = Assert.Single(events, e => e.Url.Contains("#hotsale-"));
+            Assert.Equal("HOT SALE CUỐI TUẦN – Phụ kiện, PC", hot.Title);
+            Assert.Equal("https://cellphones.com.vn/#hotsale-pk_flash_sale", hot.Url);
+            Assert.Equal(new DateTimeOffset(2026, 10, 24, 22, 0, 0, Vn), hot.EndsAt);
+
+            Assert.Equal(2, hot.Products.Count);
+            var keyboard = hot.Products[0];
+            Assert.Equal(6690000m, keyboard.Price);           // giá hot sale
+            Assert.Equal(7990000m, keyboard.OriginalPrice);   // giá niêm yết
+            Assert.Equal("Tặng túi chống sốc", keyboard.Description);
+            Assert.Equal("https://cellphones.com.vn/ban-phim-co-akko.html", keyboard.Url);
+            Assert.Equal(990000m, hot.Products[1].Price);     // thiếu giá hot sale → giá đang bán
+        }
+
+        [Fact]
+        public async Task HotSaleApiFails_ReusesPreviousResult_FlashSaleStillWorks()
+        {
+            var api = WithHotSales(ApiWithFlashSale());
+            var time = new FixedTime { Now = During };
+            var source = Source(api, new FakeRenderer(), time);
+            await source.GetLiveEventsAsync();
+
+            api.HotSaleFailure = new HttpRequestException("API hot sale đổi");
+            time.Now = During.AddMinutes(15);
+            var events = await source.GetLiveEventsAsync();
+
+            Assert.Contains(events, e => e.Url.Contains("#hotsale-pk_flash_sale")); // giữ lại, không để job xoá nhầm
+            Assert.Contains(events, e => e.Url.Contains("#flashsale-461"));
+
+            time.Now = new DateTimeOffset(2026, 10, 24, 22, 5, 0, Vn); // kết quả cũ đã hết hạn → bỏ
+            Assert.DoesNotContain(await source.GetLiveEventsAsync(), e => e.Url.Contains("#hotsale-"));
+        }
+
         [Fact]
         public async Task FlashSaleFromApi_OnlyRunningSlot_DealFromHomePage()
         {

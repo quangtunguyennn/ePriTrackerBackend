@@ -46,13 +46,20 @@ namespace ePriTrackerBackend.Controllers
             try
             {
                 var result = await _eventService.PublishAsync(tikiEvent);
+                string message = result == PublishEventResult.Created
+                    ? "Đã đăng sự kiện thành công!"
+                    : "Sự kiện này đã có sẵn, đã cập nhật trạng thái hiển thị!";
 
-                return Ok(new
+                // Cào ngay để Admin biết sự kiện có sản phẩm không (trang coupon / chưa mở bán thì người dùng mở ra sẽ trống)
+                int? productCount = await _eventService.CheckLiveProductCountAsync(tikiEvent.EventId);
+                string note = productCount switch
                 {
-                    message = result == PublishEventResult.Created
-                        ? "Đã đăng sự kiện thành công!"
-                        : "Sự kiện này đã có sẵn, đã cập nhật trạng thái hiển thị!"
-                });
+                    null => " Đang tải sản phẩm từ Tiki, kiểm tra lại số sản phẩm sau ít phút.",
+                    0 => " Lưu ý: hiện chưa đọc được sản phẩm nào trên trang này (có thể là trang mã giảm giá hoặc sự kiện chưa mở bán).",
+                    _ => $" ({productCount} sản phẩm)"
+                };
+
+                return Ok(new { message = message + note, productCount });
             }
             catch (Exception ex)
             {
@@ -102,6 +109,8 @@ namespace ePriTrackerBackend.Controllers
                 {
                     LiveProductsStatus.EventNotFound => NotFound(new { message = "Không tìm thấy sự kiện trong hệ thống." }),
                     LiveProductsStatus.NoProducts => BadRequest(new { message = "Sự kiện này đã kết thúc trên sàn hoặc không có sản phẩm." }),
+                    LiveProductsStatus.StillLoading => StatusCode(StatusCodes.Status503ServiceUnavailable,
+                        new { message = "Sản phẩm của sự kiện đang được tải từ sàn, vui lòng thử lại sau ít phút." }),
                     _ => Ok(result.Products)
                 };
             }

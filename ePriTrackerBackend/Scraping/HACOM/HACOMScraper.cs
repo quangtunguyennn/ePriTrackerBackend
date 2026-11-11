@@ -11,7 +11,7 @@ namespace ePriTrackerBackend.Scraping.Hacom
 {
     /// <summary>
     /// Strategy cho HACOM: đọc dữ liệu schema.org (JSON-LD) trong trang sản phẩm,
-    /// và tìm kiếm sản phẩm (cho gợi ý) bằng cách đọc HTML trang tìm kiếm (HttpClient → Playwright nếu không đọc được).
+    /// và tìm kiếm sản phẩm (cho gợi ý) bằng cách render trang tìm kiếm bằng Playwright rồi đọc HTML.
     /// </summary>
     public class HacomScraper : ISearchablePlatformScraper
     {
@@ -25,26 +25,22 @@ namespace ePriTrackerBackend.Scraping.Hacom
 
         /// <summary>
         /// Mẫu URL trang tìm kiếm, {0} = từ khoá đã mã hoá URL. Ghi đè được bằng cấu hình "Scraping:Platforms:HACOM:SearchUrlTemplate"
-        /// (không cần biên dịch lại). CẦN XÁC MINH: gõ thử vào ô tìm kiếm trên hacom.vn rồi so với URL trình duyệt hiển thị;
-        /// kiểm tra thêm hacom.vn/robots.txt.
+        /// (không cần biên dịch lại). Đã xác minh 31/10/2026: /tim?q=... đúng trang kết quả; robots.txt cho phép (chỉ chặn /api/, /ajax/, /admin/).
         /// </summary>
         private const string DefaultSearchUrlTemplate = "https://hacom.vn/tim?q={0}";
 
         private readonly IHybridFetcher _fetcher;
-        private readonly IHttpClientFactory _httpClientFactory;
         private readonly IPageRenderer _renderer;
         private readonly ILogger<HacomScraper> _logger;
         private readonly string _searchUrlTemplate;
 
         public HacomScraper(
             [FromKeyedServices(PlatformName)] IHybridFetcher fetcher,
-            IHttpClientFactory httpClientFactory,
             IPageRenderer renderer,
             IConfiguration configuration,
             ILogger<HacomScraper> logger)
         {
             _fetcher = fetcher ?? throw new ArgumentNullException(nameof(fetcher));
-            _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
             _renderer = renderer ?? throw new ArgumentNullException(nameof(renderer));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
@@ -86,8 +82,9 @@ namespace ePriTrackerBackend.Scraping.Hacom
         }
 
         /// <summary>
-        /// Thử HttpClient trước (nhanh, có giới hạn tốc độ theo cấu hình); không đọc được sản phẩm nào
-        /// (trang nạp bằng JavaScript, bị chặn, lỗi mạng) → render nhanh bằng Playwright (<see cref="PageRenderOptions.Search"/>).
+        /// Render trang tìm kiếm bằng Playwright (<see cref="PageRenderOptions.Search"/>). Trang tìm kiếm HACOM (Next.js) nạp kết quả
+        /// bằng JavaScript – HTML tải bằng HttpClient chỉ có khung trang (kiểm tra 31/10/2026) nên không thử HttpClient trước nữa
+        /// (tốn ~1 giây + ~900 KB mỗi lần mà luôn rỗng). Dữ liệu lấy qua /api/ – robots.txt chặn → không gọi thẳng API.
         /// Không đi qua HybridFetcher nên không ghi telemetry.
         /// </summary>
         public async Task<IReadOnlyList<ScrapedProduct>> SearchAsync(string keyword, int limit, FetchOptions options = null, CancellationToken cancellationToken = default)
@@ -97,45 +94,14 @@ namespace ePriTrackerBackend.Scraping.Hacom
             string searchUrl = SearchResultHtmlParser.BuildSearchUrl(_searchUrlTemplate, keyword);
             var sw = Stopwatch.StartNew();
 
-            var (results, httpHtml) = await TrySearchWithHttpAsync(searchUrl, limit, options, cancellationToken);
-            if (results.Count > 0)
-            {
-                _logger.LogInformation("[HACOM] Tìm '{Keyword}': {Count} sản phẩm bằng HttpClient ({Ms}ms) {Url}", keyword, results.Count, sw.ElapsedMilliseconds, searchUrl);
-                return results;
-            }
-
-            _logger.LogInformation("[HACOM] HttpClient không đọc được sản phẩm nào ({Ms}ms), chuyển sang Playwright: {Url}", sw.ElapsedMilliseconds, searchUrl);
-
             string html = await _renderer.RenderAsync(searchUrl, PageRenderOptions.Search, cancellationToken);
-            var rendered = SearchResultHtmlParser.Parse(html, searchUrl, ResolveProductLink, limit);
-            _logger.LogInformation("[HACOM] Tìm '{Keyword}': {Count} sản phẩm bằng Playwright (tổng {Ms}ms)", keyword, rendered.Count, sw.ElapsedMilliseconds);
+            var results = SearchResultHtmlParser.Parse(html, searchUrl, ResolveProductLink, limit);
+            _logger.LogInformation("[HACOM] Tìm '{Keyword}': {Count} sản phẩm bằng Playwright ({Ms}ms)", keyword, results.Count, sw.ElapsedMilliseconds);
 
-            if (rendered.Count == 0)
-                SearchResultHtmlParser.DumpForDebug(_logger, PlatformName, searchUrl, html ?? httpHtml);
+            if (results.Count == 0)
+                SearchResultHtmlParser.DumpForDebug(_logger, PlatformName, searchUrl, html);
 
-            return rendered;
-        }
-
-        private async Task<(IReadOnlyList<ScrapedProduct> Products, string Html)> TrySearchWithHttpAsync(string searchUrl, int limit, FetchOptions options, CancellationToken cancellationToken)
-        {
-            try
-            {
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                if (options?.Timeout is TimeSpan timeout)
-                    timeoutCts.CancelAfter(timeout);
-
-                var client = _httpClientFactory.CreateClient(PlatformName);
-                using var response = await client.GetAsync(searchUrl, timeoutCts.Token);
-                response.EnsureSuccessStatusCode();
-
-                string html = await response.Content.ReadAsStringAsync(timeoutCts.Token);
-                return (SearchResultHtmlParser.Parse(html, searchUrl, ResolveProductLink, limit), html);
-            }
-            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogWarning("[HACOM] Tìm kiếm bằng HttpClient thất bại ({Msg}): {Url}", ex.Message, searchUrl);
-                return (Array.Empty<ScrapedProduct>(), null);
-            }
+            return results;
         }
 
         // Chỉ nhận link trang sản phẩm của HACOM; trả link chuẩn hoá + slug làm mã ngoài (giống GetProductAsync)

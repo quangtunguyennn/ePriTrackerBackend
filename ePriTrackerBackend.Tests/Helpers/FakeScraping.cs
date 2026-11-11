@@ -64,17 +64,21 @@ namespace ePriTrackerBackend.Tests.Helpers
         /// <summary>Sản phẩm theo link sự kiện. Link có trong <see cref="FailingUrls"/> → ném lỗi.</summary>
         public Dictionary<string, List<ScrapedProduct>> ProductsByEventUrl { get; } = new();
         public HashSet<string> FailingUrls { get; } = new();
-        public int ProductCalls { get; private set; }
+        public int ProductCalls => _productCalls;
+        private int _productCalls;
+
+        /// <summary>Cào chậm: lượt cào chờ Task này xong mới trả kết quả (giả lập trang sự kiện treo lâu).</summary>
+        public Task? Gate { get; set; }
 
         public Task<IReadOnlyList<ScrapedEvent>> GetCurrentEventsAsync(CancellationToken cancellationToken = default)
             => Task.FromResult<IReadOnlyList<ScrapedEvent>>(CurrentEvents);
 
-        public Task<IReadOnlyList<ScrapedProduct>> GetEventProductsAsync(string eventUrl, CancellationToken cancellationToken = default)
+        public async Task<IReadOnlyList<ScrapedProduct>> GetEventProductsAsync(string eventUrl, CancellationToken cancellationToken = default)
         {
-            ProductCalls++;
+            Interlocked.Increment(ref _productCalls);
+            if (Gate != null) await Gate;
             if (FailingUrls.Contains(eventUrl)) throw new TimeoutException("Playwright timeout");
-            return Task.FromResult<IReadOnlyList<ScrapedProduct>>(
-                ProductsByEventUrl.TryGetValue(eventUrl, out var products) ? products : new List<ScrapedProduct>());
+            return ProductsByEventUrl.TryGetValue(eventUrl, out var products) ? products : new List<ScrapedProduct>();
         }
     }
 }

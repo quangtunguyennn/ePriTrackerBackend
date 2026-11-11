@@ -6,22 +6,27 @@ namespace ePriTrackerBackend.Services.Notification
 {
     public interface INotificationService
     {
-        Task ProcessPriceDropNotificationsAsync(ePriTrackerContext dbContext, Product product, decimal newPrice);
+        /// <summary>Thêm thông báo vào DbContext dùng chung (scoped) – bên gọi lưu bằng IUnitOfWork.</summary>
+        Task ProcessPriceDropNotificationsAsync(Product product, decimal newPrice);
     }
 
     public class NotificationService : INotificationService
     {
+        private readonly ePriTrackerContext _dbContext;
         private readonly IEmailService _emailService;
         private readonly ILogger<NotificationService> _logger;
 
-        public NotificationService(IEmailService emailService, ILogger<NotificationService> logger)
+        public NotificationService(ePriTrackerContext dbContext, IEmailService emailService, ILogger<NotificationService> logger)
         {
+            _dbContext = dbContext;
             _emailService = emailService;
             _logger = logger;
         }
 
-        public async Task ProcessPriceDropNotificationsAsync(ePriTrackerContext dbContext, Product product, decimal newPrice)
+        public async Task ProcessPriceDropNotificationsAsync(Product product, decimal newPrice)
         {
+            var dbContext = _dbContext;
+
             if (newPrice <= 0) return;
 
             // 1. Lấy danh sách Item đạt TargetPrice, INCLUDE thêm thông tin User để lấy Email

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using ePriTrackerBackend.Models.DTOs;
 using ePriTrackerBackend.Models.Entities;
 using ePriTrackerBackend.Repositories;
@@ -10,7 +11,10 @@ namespace ePriTrackerBackend.Services.Suggestions
     /// </summary>
     public interface ISuggestionService
     {
-        /// <summary>Lấy gợi ý đã lưu; nếu chưa có thì cào ngay (lazy-load) và lưu lại.</summary>
+        /// <summary>
+        /// Gọi khi mở trang chi tiết: gợi ý cập nhật trong vòng "Suggestions:RefreshCooldownMinutes" (mặc định 30 phút) → trả luôn;
+        /// cũ hơn hoặc chưa có → cào mới và thay bản cũ. Cào lỗi / không ra kết quả → giữ bản cũ. Không có job chạy ngầm.
+        /// </summary>
         Task<List<SuggestionProductDTO>> GetSuggestionsAsync(Guid productId);
 
         /// <summary>Ép cào lại và thay toàn bộ gợi ý cũ.</summary>
@@ -20,6 +24,13 @@ namespace ePriTrackerBackend.Services.Suggestions
 
     public class SuggestionService : ISuggestionService
     {
+        public const int DefaultRefreshCooldownMinutes = 30;
+
+        // Một sản phẩm chỉ cào một lần tại một thời điểm: React StrictMode / nhiều người mở cùng lúc gọi API song song,
+        // request sau chờ rồi dùng luôn kết quả vừa cào (không cào lặp, không ghi trùng gợi ý).
+        private static readonly ConcurrentDictionary<Guid, SemaphoreSlim> RefreshLocks = new();
+
+        private readonly TimeSpan _refreshCooldown;
         private readonly IProductRepository _products;
         private readonly ISuggestionRepository _suggestions;
         private readonly ISuggestionFinder _finder;
@@ -33,8 +44,11 @@ namespace ePriTrackerBackend.Services.Suggestions
             ISuggestionFinder finder,
             IUnitOfWork unitOfWork,
             IPlatformScraperResolver scrapers,
+            IConfiguration configuration,
             ILogger<SuggestionService> logger)
         {
+            if (configuration == null) throw new ArgumentNullException(nameof(configuration));
+            _refreshCooldown = TimeSpan.FromMinutes(Math.Max(0, configuration.GetValue("Suggestions:RefreshCooldownMinutes", DefaultRefreshCooldownMinutes)));
             _products = products ?? throw new ArgumentNullException(nameof(products));
             _suggestions = suggestions ?? throw new ArgumentNullException(nameof(suggestions));
             _finder = finder ?? throw new ArgumentNullException(nameof(finder));
@@ -46,26 +60,38 @@ namespace ePriTrackerBackend.Services.Suggestions
         public async Task<List<SuggestionProductDTO>> GetSuggestionsAsync(Guid productId)
         {
             var suggestions = await _suggestions.GetByProductIdAsync(productId);
+            if (IsFresh(suggestions)) return ToDtos(suggestions);
 
-            if (!suggestions.Any())
+            var gate = RefreshLocks.GetOrAdd(productId, _ => new SemaphoreSlim(1, 1));
+            await gate.WaitAsync();
+            try
             {
+                // Trong lúc chờ, request khác có thể vừa cào xong
+                suggestions = await _suggestions.GetByProductIdAsync(productId);
+                if (IsFresh(suggestions)) return ToDtos(suggestions);
+
                 var product = await _products.FindByIdAsync(productId);
-                if (product != null)
-                {
-                    _logger.LogInformation("Lazy Loading: Bắt đầu lấy sản phẩm gợi ý cho: {ProductName}", product.ProductName);
+                if (product == null) return ToDtos(suggestions);
 
-                    var newSuggestions = await FindSafelyAsync(product);
-                    if (newSuggestions.Any())
-                    {
-                        _suggestions.AddRange(newSuggestions);
-                        await _unitOfWork.SaveChangesAsync();
-                        suggestions = newSuggestions;
-                    }
-                }
+                _logger.LogInformation("Mở trang chi tiết: gợi ý {State}, cào mới cho: {ProductName}",
+                    suggestions.Any() ? "đã cũ" : "chưa có", product.ProductName);
+
+                var fresh = await FindSafelyAsync(product);
+                if (!fresh.Any()) return ToDtos(suggestions); // lỗi / không ra kết quả → giữ bản cũ thay vì để trống
+
+                await _suggestions.ReplaceForProductsAsync(new[] { productId }, fresh);
+                return ToDtos(fresh);
             }
-
-            return ToDtos(suggestions);
+            finally
+            {
+                gate.Release();
+            }
         }
+
+        private bool IsFresh(List<SuggestionProduct> suggestions)
+            => suggestions.Any()
+               && suggestions.Max(s => s.LastUpdatedAt) is DateTimeOffset updatedAt
+               && DateTimeOffset.UtcNow - updatedAt < _refreshCooldown;
 
         public async Task<List<SuggestionProductDTO>> RefreshSuggestionsAsync(Guid productId)
         {
@@ -111,7 +137,7 @@ namespace ePriTrackerBackend.Services.Suggestions
                     Price = s.Price,
                     ImageURL = s.ImageURL,
                     ProductLink = s.ProductLink,
-                    LastUpdatedAt = now,
+                    LastUpdatedAt = (s.LastUpdatedAt ?? now).ToOffset(now.Offset), // thời điểm cào thật (có thể tới 30 phút trước)
                     // Suy ra từ link → không cần lưu thêm cột trong DB
                     Platform = _scrapers.TryResolve(s.ProductLink, out var scraper) ? scraper.Platform : null
                 })

@@ -96,6 +96,21 @@ namespace ePriTrackerBackend.Tests.Services
         }
 
         [Fact]
+        public async Task EventWithOwnBanner_ShowsBanner_NoProductGrid()
+        {
+            // GearVN: mỗi chương trình có banner 16:9 riêng → không ghép lưới ảnh sản phẩm
+            var withBanner = Flash();
+            _source.Events = new() { new ScrapedEvent { Title = withBanner.Title, Url = withBanner.Url, EndsAt = withBanner.EndsAt, Products = withBanner.Products,
+                                                        ImageUrl = "https://cdn.gearvn.com/banner.jpg", ImageIsBanner = true } };
+
+            await Service().SyncPlatformAsync("CellphoneS");
+
+            var evt = Assert.Single(_db.Fresh().Event);
+            Assert.Equal("https://cdn.gearvn.com/banner.jpg", evt.ImageUrl);
+            Assert.Null(evt.PreviewImageUrls);
+        }
+
+        [Fact]
         public async Task SecondSync_UpdatesSameRow_ExtendsRollingDeadline()
         {
             _source.Events = new() { Deal() };

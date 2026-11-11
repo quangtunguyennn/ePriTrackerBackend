@@ -54,5 +54,12 @@ namespace ePriTrackerBackend.Models.Entities
 
         [NotMapped]
         public bool IsExpired { get; set; } = false;
+
+        /// <summary>
+        /// Chỉ cho trang Admin: số sản phẩm cào được gần nhất (theo cache) – 0 = trang không có sản phẩm (trang coupon, chưa mở bán...),
+        /// null = chưa cào hoặc cache đã hết hạn.
+        /// </summary>
+        [NotMapped]
+        public int? LiveProductCount { get; set; }
     }
 }

@@ -55,6 +55,12 @@ namespace ePriTrackerBackend.Scraping.Abstractions
         /// <summary>Thời điểm kết thúc nếu sàn cho biết (vd khung giờ flash sale).</summary>
         public DateTimeOffset? EndsAt { get; init; }
 
+        /// <summary>
+        /// <see cref="ImageUrl"/> là banner riêng của chương trình (GearVN) → hiển thị banner. False (mặc định): ImageUrl chỉ là ảnh một
+        /// sản phẩm (CellphoneS) → FE ghép lưới vài ảnh sản phẩm (Event.PreviewImageUrls) cho biết sự kiện bán gì.
+        /// </summary>
+        public bool ImageIsBanner { get; init; }
+
         /// <summary>Sản phẩm đọc được cùng lúc với sự kiện (nguồn tự đăng). Rỗng khi phải cào riêng từng trang sự kiện (Tiki).</summary>
         public IReadOnlyList<ScrapedProduct> Products { get; init; } = Array.Empty<ScrapedProduct>();
     }
