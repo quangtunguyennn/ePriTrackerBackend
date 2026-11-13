@@ -133,13 +133,15 @@ namespace ePriTrackerBackend.Services.Events
 
                 evt.Title = scraped.Title.Trim();
                 evt.ImageUrl = !string.IsNullOrWhiteSpace(scraped.ImageUrl) ? scraped.ImageUrl : products[0].ImageUrl ?? "";
-                // Không có banner riêng → FE ghép ảnh vài sản phẩm đầu tiên cho biết sự kiện bán gì
-                evt.PreviewImageUrls = products
-                    .Select(p => p.ImageUrl)
-                    .Where(url => !string.IsNullOrWhiteSpace(url))
-                    .Distinct()
-                    .Take(PreviewImageCount)
-                    .ToList();
+                // Không có banner riêng → FE ghép ảnh vài sản phẩm đầu tiên cho biết sự kiện bán gì; có banner (GearVN) → dùng banner
+                evt.PreviewImageUrls = scraped.ImageIsBanner && !string.IsNullOrWhiteSpace(scraped.ImageUrl)
+                    ? null
+                    : products
+                        .Select(p => p.ImageUrl)
+                        .Where(url => !string.IsNullOrWhiteSpace(url))
+                        .Distinct()
+                        .Take(PreviewImageCount)
+                        .ToList();
                 evt.EndsAt = endsAt;
                 evt.EndsAtIsExact = scraped.EndsAt != null;
                 evt.IsPublished = true;

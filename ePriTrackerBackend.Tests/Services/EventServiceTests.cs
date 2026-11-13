@@ -136,6 +136,106 @@ namespace ePriTrackerBackend.Tests.Services
         }
 
         [Fact]
+        public async Task LiveProducts_EmptyResult_RememberedTenMinutes_NoRescrape()
+        {
+            // Trang coupon / chưa mở bán: lần sau trả "không có sản phẩm" ngay, không cào lại mỗi lần mở
+            var evt = _db.AddEvent("TikiVIP", "https://tiki.vn/khuyen-mai/tikivip");
+
+            Assert.Equal(LiveProductsStatus.NoProducts, (await _service.GetLiveProductsAsync(evt.EventId)).Status);
+            Assert.Equal(LiveProductsStatus.NoProducts, (await _service.GetLiveProductsAsync(evt.EventId)).Status);
+
+            Assert.Equal(1, _scraper.ProductCalls);
+            Assert.True(_cache.TryGetValue(EventService.EmptyLiveProductsCacheKey(evt.EventId), out _));
+        }
+
+        [Fact]
+        public async Task LiveProducts_SlowScrape_ReturnsStillLoading_ThenCachedForNextVisit()
+        {
+            var evt = _db.AddEvent("Mom Club", "https://tiki.vn/khuyen-mai/mom");
+            _scraper.ProductsByEventUrl["https://tiki.vn/khuyen-mai/mom"] = new() { new ScrapedProduct { ExternalId = "1", Name = "Tã", Price = 300000 } };
+            var gate = new TaskCompletionSource();
+            _scraper.Gate = gate.Task;
+            var impatient = new EventService(new EventRepository(_db.Context), _scraper, _autoSync, new EfUnitOfWork(_db.Context), _cache, NullLogger<EventService>.Instance)
+            {
+                UserWaitLimit = TimeSpan.FromMilliseconds(100)
+            };
+
+            var first = await impatient.GetLiveProductsAsync(evt.EventId);
+            Assert.Equal(LiveProductsStatus.StillLoading, first.Status);
+
+            gate.SetResult(); // trang cào xong trong nền
+            await WaitUntilAsync(() => _cache.TryGetValue(EventService.LiveProductsCacheKey(evt.EventId), out _));
+
+            var second = await impatient.GetLiveProductsAsync(evt.EventId);
+            Assert.Equal(LiveProductsStatus.Ok, second.Status);
+            Assert.Equal(1, _scraper.ProductCalls); // lượt cào nền được dùng lại, không cào thêm
+        }
+
+        [Fact]
+        public async Task LiveProducts_ParallelVisitors_ShareOneScrape()
+        {
+            var evt = _db.AddEvent("Sale", "https://tiki.vn/khuyen-mai/sale");
+            _scraper.ProductsByEventUrl["https://tiki.vn/khuyen-mai/sale"] = new() { new ScrapedProduct { ExternalId = "1", Price = 1000 } };
+            var gate = new TaskCompletionSource();
+            _scraper.Gate = gate.Task;
+
+            var a = _service.GetLiveProductsAsync(evt.EventId);
+            var b = _service.GetLiveProductsAsync(evt.EventId);
+            gate.SetResult();
+
+            Assert.All(await Task.WhenAll(a, b), r => Assert.Equal(LiveProductsStatus.Ok, r.Status));
+            Assert.Equal(1, _scraper.ProductCalls);
+        }
+
+        [Fact]
+        public async Task RefreshCache_ProductsAppearLater_ClearsEmptyMark()
+        {
+            // Sự kiện chưa mở bán (vd "link sản phẩm có vào ngày 11.11") → job 30 phút cào lại; khi có sản phẩm thì hiện ngay
+            var evt = _db.AddEvent("11.11", "https://tiki.vn/khuyen-mai/1111");
+            await _service.GetLiveProductsAsync(evt.EventId); // rỗng → đánh dấu
+
+            _scraper.ProductsByEventUrl["https://tiki.vn/khuyen-mai/1111"] = new() { new ScrapedProduct { ExternalId = "9", Price = 11000 } };
+            await _service.RefreshAllLiveProductsCacheAsync();
+
+            Assert.False(_cache.TryGetValue(EventService.EmptyLiveProductsCacheKey(evt.EventId), out _));
+            Assert.Equal(LiveProductsStatus.Ok, (await _service.GetLiveProductsAsync(evt.EventId)).Status);
+        }
+
+        [Fact]
+        public async Task Admin_CheckCount_And_ListShowsCachedCount()
+        {
+            var withProducts = _db.AddEvent("Co hang", "https://tiki.vn/khuyen-mai/co");
+            var empty = _db.AddEvent("Coupon", "https://tiki.vn/khuyen-mai/coupon");
+            var neverScraped = _db.AddEvent("Chua cao", "https://tiki.vn/khuyen-mai/chua");
+            _scraper.ProductsByEventUrl["https://tiki.vn/khuyen-mai/co"] = new() { new ScrapedProduct { ExternalId = "1" }, new ScrapedProduct { ExternalId = "2" } };
+
+            Assert.Equal(2, await _service.CheckLiveProductCountAsync(withProducts.EventId));
+            Assert.Equal(0, await _service.CheckLiveProductCountAsync(empty.EventId));
+            Assert.Null(await _service.CheckLiveProductCountAsync(Guid.NewGuid()));
+
+            var list = await _service.GetAllForAdminAsync();
+            Assert.Equal(2, list.Single(e => e.EventId == withProducts.EventId).LiveProductCount);
+            Assert.Equal(0, list.Single(e => e.EventId == empty.EventId).LiveProductCount);
+            Assert.Null(list.Single(e => e.EventId == neverScraped.EventId).LiveProductCount);
+        }
+
+        [Fact]
+        public async Task Publish_ExistingEvent_ReportsItsId()
+        {
+            var existing = _db.AddEvent("Sale", "https://tiki.vn/khuyen-mai/sale", published: false);
+            var request = new Event { Title = "Sale", EventLink = "https://tiki.vn/khuyen-mai/sale?x=1", ImageUrl = "x" };
+
+            Assert.Equal(PublishEventResult.Republished, await _service.PublishAsync(request));
+            Assert.Equal(existing.EventId, request.EventId); // controller dùng ID này để kiểm tra số sản phẩm
+        }
+
+        private static async Task WaitUntilAsync(Func<bool> condition)
+        {
+            for (int i = 0; i < 100 && !condition(); i++) await Task.Delay(20);
+            Assert.True(condition());
+        }
+
+        [Fact]
         public async Task RefreshCache_OneEventFails_OthersStillCached_UnpublishedSkipped()
         {
             var ok = _db.AddEvent("OK", "https://tiki.vn/ok");

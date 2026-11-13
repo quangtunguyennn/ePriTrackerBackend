@@ -16,6 +16,9 @@ namespace ePriTrackerBackend.Repositories
         public Task<Product> FindByIdAsync(Guid productId)
             => _context.Product.AsNoTracking().FirstOrDefaultAsync(p => p.ProductId == productId);
 
+        public Task<Product> FindForUpdateAsync(Guid productId)
+            => _context.Product.FirstOrDefaultAsync(p => p.ProductId == productId);
+
         public Task<Product> FindByLinkAsync(string productLink)
             => _context.Product.FirstOrDefaultAsync(p => p.ProductLink == productLink);
 
@@ -47,6 +50,32 @@ namespace ePriTrackerBackend.Repositories
             return query
                 .Where(p => _context.Item.Any(i => i.ProductId == p.ProductId))
                 .ToListAsync(cancellationToken);
+        }
+
+        public async Task<List<Product>> GetDueForCrawlAsync(DateTimeOffset now, int take, CancellationToken cancellationToken = default)
+        {
+            // Lọc/sắp theo NextCrawlAt trong bộ nhớ (SQLite của test không so sánh được DateTimeOffset); chỉ đọc Id + hạn
+            // nên nhẹ, rồi mới nạp đủ cột (kể cả mô tả dài) cho đúng số sản phẩm cần cào.
+            var schedule = await _context.Product
+                .AsNoTracking()
+                .Where(p => p.ActiveTrackersCount > 0 && p.NextCrawlAt != null)
+                .Select(p => new { p.ProductId, p.NextCrawlAt })
+                .ToListAsync(cancellationToken);
+
+            var dueIds = schedule
+                .Where(s => s.NextCrawlAt <= now)
+                .OrderBy(s => s.NextCrawlAt)
+                .Take(take)
+                .Select(s => s.ProductId)
+                .ToList();
+
+            if (dueIds.Count == 0) return new List<Product>();
+
+            var products = await _context.Product
+                .Where(p => dueIds.Contains(p.ProductId))
+                .ToListAsync(cancellationToken);
+
+            return products.OrderBy(p => dueIds.IndexOf(p.ProductId)).ToList();
         }
     }
 }

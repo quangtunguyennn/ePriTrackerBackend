@@ -14,7 +14,7 @@ namespace ePriTrackerBackend.Services.Products
 
     public interface IProductTrackingService
     {
-        Task AddProductAsync(string productLink, string userEmail, decimal? TargetPrice);
+        Task AddProductAsync(string productLink, string userEmail, decimal? targetPrice = null);
         Task<TrackDealResult> TrackDealAsync(Guid userId, TrackDealDto deal);
         Task<List<TrackedProductDTO>> GetTrackedProductsAsync(string userEmail);
         Task<TrackedProductDTO> GetTrackedProductAsync(Guid productId, string userEmail);
@@ -67,7 +67,7 @@ namespace ePriTrackerBackend.Services.Products
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
-        public async Task AddProductAsync(string productLink, string userEmail, decimal? TargetPrice)
+        public async Task AddProductAsync(string productLink, string userEmail, decimal? targetPrice = null)
         {
             if (string.IsNullOrWhiteSpace(productLink)) throw new ArgumentException("Link sản phẩm không được trống.", nameof(productLink));
             if (string.IsNullOrWhiteSpace(userEmail)) throw new ArgumentException("Email người dùng không được trống.", nameof(userEmail));
@@ -96,7 +96,7 @@ namespace ePriTrackerBackend.Services.Products
                 UserId = user.UserId,
                 ProductId = product.ProductId,
                 InitialPrice = CurrentPriceOrNull(product),
-                TargetPrice = TargetPrice
+                TargetPrice = targetPrice
             });
 
             // LOGIC CẬP NHẬT CRONJOB & TIER
@@ -109,9 +109,9 @@ namespace ePriTrackerBackend.Services.Products
                 product.CrawlIntervalMinutes = 1440;
             }
 
-            if (TargetPrice.HasValue && (!product.MaxTargetPrice.HasValue || TargetPrice.Value > product.MaxTargetPrice.Value))
+            if (targetPrice.HasValue && (!product.MaxTargetPrice.HasValue || targetPrice.Value > product.MaxTargetPrice.Value))
             {
-                product.MaxTargetPrice = TargetPrice.Value;
+                product.MaxTargetPrice = targetPrice.Value;
             }
 
             if (!isNewProduct) _products.Update(product);
@@ -171,7 +171,8 @@ namespace ePriTrackerBackend.Services.Products
 
             _trackedItems.Remove(item);
 
-            var product = await _products.FindByIdAsync(productId);
+            // Bản có theo dõi thay đổi: FindByIdAsync (AsNoTracking) + Update() xung đột khi DbContext đã giữ sản phẩm này
+            var product = await _products.FindForUpdateAsync(productId);
             if (product != null && product.ActiveTrackersCount > 0)
             {
                 product.ActiveTrackersCount--;
@@ -187,8 +188,6 @@ namespace ePriTrackerBackend.Services.Products
                 {
                     product.NextCrawlAt = GetNowVn(); // Giờ VN
                 }
-
-                _products.Update(product);
             }
 
             await _unitOfWork.SaveChangesAsync();

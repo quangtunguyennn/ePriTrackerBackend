@@ -91,5 +91,29 @@ namespace ePriTrackerBackend.Tests.Suggestions
         {
             Assert.Equal(expected, VietnameseText.RemoveDiacritics(input!));
         }
+
+        [Fact]
+        public void DecomposedUnicodeName_GivesSameKeywordAsComposed()
+        {
+            // Tên lấy từ Tiki lưu "ộ" dạng tách dấu (ô + U+0323) → trước đây ra "chuô t logitech mx master"
+            const string composed = "Chuột Logitech MX Master 3S không dây Bluetooth/Wireless - Hàng Chính Hãng";
+            string decomposed = composed.Normalize(System.Text.NormalizationForm.FormD);
+            Assert.NotEqual(composed, decomposed);
+
+            Assert.Equal("chuột logitech mx master 3s", _matcher.ExtractSearchKeyword(decomposed));
+            Assert.Equal(_matcher.ExtractSearchKeyword(composed), _matcher.ExtractSearchKeyword(decomposed));
+        }
+
+        [Fact]
+        public void DecomposedUnicode_MarketingWordsStillRemoved_AndSimilarityWorks()
+        {
+            string decomposed = "Tai nghe Sony WH-1000XM5 chính hãng".Normalize(System.Text.NormalizationForm.FormD);
+            Assert.DoesNotContain("chính", _matcher.ExtractSearchKeyword("Sony WH-1000XM5 chính hãng".Normalize(System.Text.NormalizationForm.FormD)));
+
+            Assert.True(_matcher.IsSimilarProduct(
+                "Chuột Logitech MX Master 3S".Normalize(System.Text.NormalizationForm.FormD),
+                "Chuột Logitech MX Master 3S Pale Grey"));
+            Assert.True(_matcher.IsSimilarProduct(decomposed, "Tai nghe chụp tai Sony WH-1000XM5"));
+        }
     }
 }

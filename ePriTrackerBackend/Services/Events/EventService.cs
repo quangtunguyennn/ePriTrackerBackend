@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using ePriTrackerBackend.Models.DTOs;
 using ePriTrackerBackend.Models.Entities;
 using ePriTrackerBackend.Models.Mappings;
@@ -17,7 +18,10 @@ namespace ePriTrackerBackend.Services.Events
     {
         Ok,
         EventNotFound,
-        NoProducts
+        NoProducts,
+
+        /// <summary>Cào lâu hơn <see cref="EventService.UserWaitLimit"/> – vẫn chạy tiếp, xong sẽ vào cache cho lần mở sau.</summary>
+        StillLoading
     }
 
     public sealed class LiveProductsResult
@@ -45,8 +49,16 @@ namespace ePriTrackerBackend.Services.Events
         /// <summary>Sự kiện đang hiển thị và chưa hết hạn. Đồng thời xoá hẳn sự kiện Admin đăng cũ hơn 14 ngày.</summary>
         Task<List<Event>> GetPublishedAsync();
 
-        /// <summary>Sản phẩm live của sự kiện: ưu tiên cache, chưa có thì cào ngay rồi cache.</summary>
+        /// <summary>
+        /// Sản phẩm live của sự kiện: ưu tiên cache, chưa có thì cào ngay rồi cache. Người dùng chờ tối đa <see cref="EventService.UserWaitLimit"/>;
+        /// sự kiện vừa cào ra rỗng được nhớ 10 phút (trả NoProducts ngay thay vì cào lại mỗi lần mở).
+        /// </summary>
         Task<LiveProductsResult> GetLiveProductsAsync(Guid eventId);
+
+        /// <summary>
+        /// Admin vừa đăng: cào ngay để biết số sản phẩm (và làm nóng cache). Null = chưa xong trong thời gian chờ (vẫn chạy tiếp).
+        /// </summary>
+        Task<int?> CheckLiveProductCountAsync(Guid eventId);
 
         /// <summary>Cào lại và cache sản phẩm live của mọi sự kiện Admin đã đăng (job Hangfire).</summary>
         Task RefreshAllLiveProductsCacheAsync();
@@ -58,7 +70,16 @@ namespace ePriTrackerBackend.Services.Events
     public class EventService : IEventService
     {
         private static readonly TimeSpan LiveProductsCacheDuration = TimeSpan.FromMinutes(30);
+        private static readonly TimeSpan EmptyResultCacheDuration = TimeSpan.FromMinutes(10);
         private static readonly TimeSpan EventRetention = TimeSpan.FromDays(14);
+
+        // Mỗi sự kiện chỉ cào một lần tại một thời điểm (nhiều người mở cùng lúc / job 30 phút trùng lượt người dùng):
+        // dùng chung một Task. Static vì EventService là scoped, còn lượt cào có thể chạy tiếp sau khi request kết thúc
+        // (scraper, trình duyệt, IMemoryCache đều là singleton).
+        private static readonly ConcurrentDictionary<Guid, Lazy<Task<List<LiveEventProductDTO>>>> InFlightScrapes = new();
+
+        /// <summary>Thời gian tối đa người dùng chờ cào sản phẩm sự kiện (trang sự kiện Tiki nặng, có trang treo tới 90 giây).</summary>
+        public TimeSpan UserWaitLimit { get; init; } = TimeSpan.FromSeconds(25);
 
         private readonly IEventRepository _events;
         private readonly IEventScraper _eventScraper;
@@ -84,6 +105,9 @@ namespace ePriTrackerBackend.Services.Events
         }
 
         public static string LiveProductsCacheKey(Guid eventId) => $"EventProducts_{eventId}";
+
+        /// <summary>Đánh dấu "vừa cào ra rỗng" – tách khỏi khoá danh sách để không lẫn với cache sản phẩm thật.</summary>
+        public static string EmptyLiveProductsCacheKey(Guid eventId) => $"EventProductsEmpty_{eventId}";
 
         /// <summary>Sàn do Admin quản lý sự kiện (Tiki).</summary>
         private string AdminPlatform => _eventScraper.Platform;
@@ -116,6 +140,7 @@ namespace ePriTrackerBackend.Services.Events
                 {
                     scraped.IsPublished = existingDbEvent.IsPublished;
                     scraped.EventId = existingDbEvent.EventId;
+                    scraped.LiveProductCount = CachedProductCount(existingDbEvent.EventId);
                     activeDbEventIds.Add(existingDbEvent.EventId); // Đánh dấu sự kiện này còn sống
                 }
                 else
@@ -158,14 +183,37 @@ namespace ePriTrackerBackend.Services.Events
                 return PublishEventResult.Created;
             }
 
-            // Đã tồn tại: chỉ bật lại hiển thị, giữ nguyên ID cũ
+            // Đã tồn tại: chỉ bật lại hiển thị, giữ nguyên ID cũ (báo lại ID cho bên gọi, vd để kiểm tra số sản phẩm)
             existingEvent.IsPublished = true;
             existingEvent.CreatedAt = DateTime.UtcNow;
             await _unitOfWork.SaveChangesAsync();
+            evt.EventId = existingEvent.EventId;
             return PublishEventResult.Republished;
         }
 
-        public Task<List<Event>> GetAllForAdminAsync() => _events.GetByPlatformNewestFirstAsync(AdminPlatform);
+        public async Task<List<Event>> GetAllForAdminAsync()
+        {
+            var events = await _events.GetByPlatformNewestFirstAsync(AdminPlatform);
+            foreach (var evt in events) evt.LiveProductCount = CachedProductCount(evt.EventId);
+            return events;
+        }
+
+        public async Task<int?> CheckLiveProductCountAsync(Guid eventId)
+        {
+            var evt = await FindAdminEventAsync(eventId);
+            if (evt == null) return null;
+
+            _cache.Remove(EmptyLiveProductsCacheKey(eventId)); // Admin chủ động kiểm tra → cào lại thật
+            var products = await WaitForScrapeAsync(eventId, evt.EventLink);
+            return products?.Count;
+        }
+
+        /// <summary>Số sản phẩm theo cache: số thật, 0 = vừa cào ra rỗng, null = chưa cào (hoặc cache đã hết hạn).</summary>
+        private int? CachedProductCount(Guid eventId)
+        {
+            if (TryGetCachedProducts(eventId, out var products)) return products.Count;
+            return _cache.TryGetValue(EmptyLiveProductsCacheKey(eventId), out _) ? 0 : null;
+        }
 
         public async Task<bool?> TogglePublishAsync(Guid eventId)
         {
@@ -215,12 +263,17 @@ namespace ePriTrackerBackend.Services.Events
                     : new LiveProductsResult { Status = LiveProductsStatus.NoProducts };
             }
 
-            var products = await ScrapeLiveProductsAsync(evt.EventLink);
-            if (products.Count == 0) return new LiveProductsResult { Status = LiveProductsStatus.NoProducts };
+            // Vừa cào ra rỗng trong 10 phút qua (trang coupon, chưa mở bán...) → trả ngay, không bắt người dùng chờ cào lại
+            if (_cache.TryGetValue(EmptyLiveProductsCacheKey(eventId), out _))
+                return new LiveProductsResult { Status = LiveProductsStatus.NoProducts };
 
-            // BƯỚC 3: Lưu cache cho những người dùng sau
-            CacheLiveProducts(eventId, products);
-            return new LiveProductsResult { Status = LiveProductsStatus.Ok, Products = products };
+            // BƯỚC 3: Cào (dùng chung lượt đang chạy nếu có), kết quả tự vào cache cho những người dùng sau
+            var products = await WaitForScrapeAsync(eventId, evt.EventLink);
+            if (products == null) return new LiveProductsResult { Status = LiveProductsStatus.StillLoading };
+
+            return products.Count == 0
+                ? new LiveProductsResult { Status = LiveProductsStatus.NoProducts }
+                : new LiveProductsResult { Status = LiveProductsStatus.Ok, Products = products };
         }
 
         public async Task RefreshAllLiveProductsCacheAsync()
@@ -232,14 +285,53 @@ namespace ePriTrackerBackend.Services.Events
             {
                 try
                 {
-                    var products = await ScrapeLiveProductsAsync(evt.EventLink);
-                    if (products.Count > 0) CacheLiveProducts(evt.EventId, products);
+                    // Job thử lại cả sự kiện vừa rỗng (khi sàn mở bán, sản phẩm tự hiện) – chờ cho xong, không giới hạn như người dùng
+                    await StartOrJoinScrape(evt.EventId, evt.EventLink);
                 }
                 catch (Exception ex)
                 {
                     // Một sự kiện lỗi không được làm hỏng cả lượt cập nhật cache
                     _logger.LogError(ex, "Lỗi khi cào sự kiện {EventId}", evt.EventId);
                 }
+            }
+        }
+
+        /// <summary>Chờ lượt cào tối đa <see cref="UserWaitLimit"/>. Null = chưa xong (lượt cào vẫn chạy tiếp, kết quả vào cache).</summary>
+        private async Task<List<LiveEventProductDTO>> WaitForScrapeAsync(Guid eventId, string eventLink)
+        {
+            var scrape = StartOrJoinScrape(eventId, eventLink);
+            if (await Task.WhenAny(scrape, Task.Delay(UserWaitLimit)) != scrape)
+            {
+                _logger.LogWarning("Cào sản phẩm sự kiện {EventId} quá {Seconds}s – trả 'đang tải', tiếp tục cào nền.", eventId, UserWaitLimit.TotalSeconds);
+                return null;
+            }
+            return await scrape;
+        }
+
+        private Task<List<LiveEventProductDTO>> StartOrJoinScrape(Guid eventId, string eventLink)
+            => InFlightScrapes.GetOrAdd(eventId, id => new Lazy<Task<List<LiveEventProductDTO>>>(() => ScrapeAndCacheAsync(id, eventLink))).Value;
+
+        // Không dùng gì scoped (chạy tiếp được sau khi request kết thúc): scraper + cache + logger đều singleton
+        private async Task<List<LiveEventProductDTO>> ScrapeAndCacheAsync(Guid eventId, string eventLink)
+        {
+            try
+            {
+                var products = await ScrapeLiveProductsAsync(eventLink);
+                if (products.Count > 0)
+                {
+                    CacheLiveProducts(eventId, products);
+                    _cache.Remove(EmptyLiveProductsCacheKey(eventId));
+                }
+                else
+                {
+                    _cache.Set(EmptyLiveProductsCacheKey(eventId), true,
+                        new MemoryCacheEntryOptions().SetAbsoluteExpiration(EmptyResultCacheDuration));
+                }
+                return products;
+            }
+            finally
+            {
+                InFlightScrapes.TryRemove(eventId, out _);
             }
         }
 

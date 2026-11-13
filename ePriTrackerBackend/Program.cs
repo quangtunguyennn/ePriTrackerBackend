@@ -55,12 +55,7 @@ builder.Services.AddCors(options =>
 // ==========================================
 builder.Services.AddScraping();             // Telemetry, các sàn TMĐT (Strategy), bộ chọn sàn
 builder.Services.AddRepositories();         // Truy cập DB
-builder.Services.AddApplicationServices();  // Nghiệp vụ + điểm vào job Hangfire
-
-// Services cho luồng cào giá Adaptive & Thông báo
-builder.Services.AddScoped<ePriTrackerBackend.Services.Notification.INotificationService, ePriTrackerBackend.Services.Notification.NotificationService>();
-builder.Services.AddScoped<IPriceCrawlerWorker, PriceCrawlerWorker>();
-builder.Services.AddTransient<ePriTrackerBackend.Services.Notification.IEmailService, ePriTrackerBackend.Services.Notification.EmailService>();
+builder.Services.AddApplicationServices();  // Nghiệp vụ, thông báo + điểm vào job Hangfire
 builder.Services.AddControllers();
 
 // ==========================================
@@ -161,7 +156,10 @@ RecurringJob.AddOrUpdate<IPriceCrawlerWorker>(
     new RecurringJobOptions { TimeZone = vietnamTz }
 );
 
-
+// 2. Job cũ đã bỏ – xoá khỏi DB Hangfire của máy nào còn (lớp đã xoá → "Could not load type" mỗi lần tới lịch):
+//    giá: thay bằng job theo Tier ở trên; gợi ý: cào khi người dùng mở trang chi tiết (SuggestionService), không chạy ngầm
+RecurringJob.RemoveIfExists("update-prices-job");
+RecurringJob.RemoveIfExists("update-suggestions-job");
 
 // 3. Cache Sự kiện
 RecurringJob.AddOrUpdate<IEventCacheService>(

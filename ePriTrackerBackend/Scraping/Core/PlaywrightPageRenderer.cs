@@ -11,7 +11,10 @@ namespace ePriTrackerBackend.Scraping.Core
         public int ScrollPauseMs { get; init; } = 700;
         public int SettleMs { get; init; } = 1500;
 
-        /// <summary>Chờ tới khi trong trang xuất hiện chuỗi giá tiền (vd "26.990.000đ") thay vì chờ cố định; quá hạn vẫn lấy HTML hiện có.</summary>
+        /// <summary>
+        /// Chờ tới khi trong trang xuất hiện chuỗi giá tiền (vd "26.990.000đ") hoặc câu báo không có kết quả, thay vì chờ cố định;
+        /// quá hạn vẫn lấy HTML hiện có.
+        /// </summary>
         public bool WaitForPrice { get; init; }
         public int WaitForPriceTimeoutMs { get; init; } = 8000;
 
@@ -41,18 +44,31 @@ namespace ePriTrackerBackend.Scraping.Core
     }
 
     /// <summary>
+    /// Mở trang bằng trình duyệt thật và lấy NỘI DUNG một phản hồi mà chính trang đó tải (vd JSON từ API nội bộ của trang) –
+    /// dự phòng khi gọi thẳng API không được: trình duyệt gửi đúng header/cookie như người dùng mở trang.
+    /// </summary>
+    public interface IPageResponseCapture
+    {
+        /// <param name="responseUrlContains">Phần URL của phản hồi cần lấy (phản hồi 200 đầu tiên khớp).</param>
+        /// <exception cref="TimeoutException">Trang không tải phản hồi đó trong <paramref name="timeout"/>.</exception>
+        Task<string> CaptureResponseAsync(string pageUrl, string responseUrlContains, TimeSpan timeout, CancellationToken cancellationToken = default);
+    }
+
+    /// <summary>
     /// Trình duyệt Chromium headless dùng chung, tối đa <see cref="MaxConcurrentPages"/> trang cùng lúc (mỗi trang một context riêng,
     /// nên cookie không lẫn). Không tải ảnh thật (trả ảnh 1×1), chặn font/video cho nhanh – thẻ &lt;img src&gt; vẫn giữ link thật.
     /// Tách riêng với TikiBrowserService (trang Tiki cần phiên/cookie riêng).
     /// </summary>
-    public sealed class PlaywrightPageRenderer : IPageRenderer, IAsyncDisposable
+    public sealed class PlaywrightPageRenderer : IPageRenderer, IPageResponseCapture, IAsyncDisposable
     {
         // 2 trang song song: đủ để CellphoneS và HACOM tìm cùng lúc nhưng vẫn nhẹ máy
         private const int MaxConcurrentPages = 2;
 
-        // Có chuỗi giá tiền trong chữ hiển thị chưa
+        // Có chuỗi giá tiền trong chữ hiển thị chưa – hoặc trang đã báo không có kết quả (HACOM: "Không có kết quả phù hợp"),
+        // khỏi chờ hết hạn vô ích (trước đây trang không có kết quả luôn tốn đủ WaitForPriceTimeoutMs)
         private const string PricePresentScript =
-            @"() => /\d{1,3}([.,]\d{3})+\s*(đ|₫|vnđ|vnd)/i.test(document.body ? document.body.innerText : '')";
+            @"() => { const t = document.body ? document.body.innerText : '';
+                      return /\d{1,3}([.,]\d{3})+\s*(đ|₫|vnđ|vnd)/i.test(t) || /không có kết quả|không tìm thấy (sản phẩm|kết quả)/i.test(t); }";
 
         // GIF 1×1 trong suốt (43 byte)
         private static readonly byte[] TransparentGif = Convert.FromBase64String("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7");
@@ -79,24 +95,7 @@ namespace ePriTrackerBackend.Scraping.Core
             IBrowserContext context = null;
             try
             {
-                var browser = await GetBrowserAsync(cancellationToken);
-                context = await browser.NewContextAsync(new BrowserNewContextOptions
-                {
-                    UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                    Locale = "vi-VN",
-                    ViewportSize = new ViewportSize { Width = 1366, Height = 900 }
-                });
-
-                // Ảnh: trả ảnh 1×1 thay vì chặn – chặn (abort) làm trang tưởng ảnh lỗi và thay link thật bằng ảnh giữ chỗ
-                // (CellphoneS đổi src sang "placehoder.png"). Font/video không ảnh hưởng dữ liệu → chặn cho nhanh.
-                await context.RouteAsync("**/*", route => route.Request.ResourceType switch
-                {
-                    "image" => route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "image/gif", BodyBytes = TransparentGif }),
-                    "media" or "font" => route.AbortAsync(),
-                    "stylesheet" when options.BlockStylesheets => route.AbortAsync(),
-                    _ => route.ContinueAsync()
-                });
-
+                context = await NewContextAsync(options.BlockStylesheets, cancellationToken);
                 var page = await context.NewPageAsync();
                 await page.GotoAsync(url, new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = options.NavigationTimeoutMs });
 
@@ -107,7 +106,7 @@ namespace ePriTrackerBackend.Scraping.Core
                         await page.WaitForFunctionAsync(PricePresentScript, null,
                             new PageWaitForFunctionOptions { Timeout = options.WaitForPriceTimeoutMs, PollingInterval = 250 });
                     }
-                    catch (PlaywrightException ex)
+                    catch (Exception ex) when (ex is PlaywrightException or System.TimeoutException && !cancellationToken.IsCancellationRequested)
                     {
                         // Hết hạn chờ giá: có thể trang không có kết quả → vẫn trả HTML hiện có để tầng trên quyết định
                         _logger.LogDebug(ex, "Chưa thấy giá tiền trên trang sau {Ms}ms: {Url}", options.WaitForPriceTimeoutMs, url);
@@ -134,6 +133,56 @@ namespace ePriTrackerBackend.Scraping.Core
                 }
                 _slots.Release();
             }
+        }
+
+        public async Task<string> CaptureResponseAsync(string pageUrl, string responseUrlContains, TimeSpan timeout, CancellationToken cancellationToken = default)
+        {
+            await _slots.WaitAsync(cancellationToken);
+            IBrowserContext context = null;
+            try
+            {
+                context = await NewContextAsync(blockStylesheets: true, cancellationToken);
+                var page = await context.NewPageAsync();
+
+                // Đăng ký chờ TRƯỚC khi mở trang để không lỡ phản hồi đến sớm
+                var waitForResponse = page.WaitForResponseAsync(
+                    r => r.Status == 200 && r.Url.Contains(responseUrlContains, StringComparison.OrdinalIgnoreCase),
+                    new PageWaitForResponseOptions { Timeout = (float)timeout.TotalMilliseconds });
+
+                await page.GotoAsync(pageUrl, new PageGotoOptions { WaitUntil = WaitUntilState.Commit, Timeout = (float)timeout.TotalMilliseconds });
+                var response = await waitForResponse;
+                return await response.TextAsync();
+            }
+            finally
+            {
+                if (context != null)
+                {
+                    try { await context.CloseAsync(); } catch (Exception ex) { _logger.LogDebug(ex, "Đóng context Playwright lỗi."); }
+                }
+                _slots.Release();
+            }
+        }
+
+        private async Task<IBrowserContext> NewContextAsync(bool blockStylesheets, CancellationToken cancellationToken)
+        {
+            var browser = await GetBrowserAsync(cancellationToken);
+            var context = await browser.NewContextAsync(new BrowserNewContextOptions
+            {
+                UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                Locale = "vi-VN",
+                ViewportSize = new ViewportSize { Width = 1366, Height = 900 }
+            });
+
+            // Ảnh: trả ảnh 1×1 thay vì chặn – chặn (abort) làm trang tưởng ảnh lỗi và thay link thật bằng ảnh giữ chỗ
+            // (CellphoneS đổi src sang "placehoder.png"). Font/video không ảnh hưởng dữ liệu → chặn cho nhanh.
+            await context.RouteAsync("**/*", route => route.Request.ResourceType switch
+            {
+                "image" => route.FulfillAsync(new RouteFulfillOptions { Status = 200, ContentType = "image/gif", BodyBytes = TransparentGif }),
+                "media" or "font" => route.AbortAsync(),
+                "stylesheet" when blockStylesheets => route.AbortAsync(),
+                _ => route.ContinueAsync()
+            });
+            return context;
         }
 
         // Nhiều trang chạy song song nên việc mở trình duyệt phải có khoá riêng. Trình duyệt chết (crash) → mở lại.

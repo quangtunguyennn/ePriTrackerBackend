@@ -1,25 +1,36 @@
 using ePriTrackerBackend.Models.Entities;
 using ePriTrackerBackend.Repositories;
 using ePriTrackerBackend.Scraping.Abstractions;
-using ePriTrackerBackend.Services;
+using ePriTrackerBackend.Services.Notification;
+using ePriTrackerBackend.Services.PriceCronJob;
 using ePriTrackerBackend.Tests.Helpers;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ePriTrackerBackend.Tests.Services
 {
-    public class PriceCrawlerServiceTests : IDisposable
+    /// <summary>
+    /// Job cào giá theo Tier: giữ đủ quy tắc của job cũ (PriceCrawlerService) + chọn sản phẩm đến hạn và hẹn lần cào sau.
+    /// </summary>
+    public class PriceCrawlerWorkerTests : IDisposable
     {
         private readonly TestDb _db = new();
         private readonly FakePlatformScraper _scraper = new();
+        private readonly RecordingNotifications _notifications = new();
 
         public void Dispose() => _db.Dispose();
 
-        private PriceCrawlerService Job()
+        /// <summary>Ghi lại lời gọi thay vì tạo thông báo / gửi email.</summary>
+        private sealed class RecordingNotifications : INotificationService
         {
-            var ctx = _db.Context;
-            return new PriceCrawlerService(new ProductRepository(ctx), new PriceHistoryRepository(ctx), new TrackedItemRepository(ctx), new EfUnitOfWork(ctx),
-                new SingleScraperResolver(_scraper), NullLogger<PriceCrawlerService>.Instance);
+            public List<(Guid ProductId, decimal Price)> Calls { get; } = new();
+            public Task ProcessPriceDropNotificationsAsync(Product product, decimal newPrice)
+            {
+                Calls.Add((product.ProductId, newPrice));
+                return Task.CompletedTask;
+            }
         }
+
+        private PriceCrawlerWorker Job() => Job(_scraper);
 
         /// <summary>Một sản phẩm đang được theo dõi (link sàn giả "fake.vn").</summary>
         private Product Tracked(string id, decimal price, bool inStock = true)
@@ -53,7 +64,7 @@ namespace ePriTrackerBackend.Tests.Services
             _scraper.Products[FakePlatformScraper.Normalized("2")] = new ScrapedProduct { Price = 500 };
             _scraper.Products[FakePlatformScraper.Normalized("5")] = new ScrapedProduct { Price = 1 };
 
-            await Job().UpdateAllTrackedProductPricesAsync();
+            await Job().ProcessPendingProductsAsync();
 
             using var fresh = _db.Fresh();
             Assert.Equal(900m, fresh.Product.Single(p => p.ProductId == changed.ProductId).LatestPrice);
@@ -77,7 +88,7 @@ namespace ePriTrackerBackend.Tests.Services
             _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { Price = price, IsAvailable = available };
             var before = DateTimeOffset.UtcNow.AddSeconds(-1);
 
-            await Job().UpdateAllTrackedProductPricesAsync();
+            await Job().ProcessPendingProductsAsync();
 
             var stored = Reload(product);
             Assert.False(stored.IsInStock);
@@ -94,7 +105,7 @@ namespace ePriTrackerBackend.Tests.Services
             var since = Reload(product).OutOfStockSince;
             _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { Price = 900, IsAvailable = false };
 
-            await Job().UpdateAllTrackedProductPricesAsync();
+            await Job().ProcessPendingProductsAsync();
 
             var stored = Reload(product);
             Assert.False(stored.IsInStock);
@@ -108,7 +119,7 @@ namespace ePriTrackerBackend.Tests.Services
             var product = Tracked("1", 1000, inStock: false);
             _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { Price = 950, IsAvailable = true };
 
-            await Job().UpdateAllTrackedProductPricesAsync();
+            await Job().ProcessPendingProductsAsync();
 
             var stored = Reload(product);
             Assert.True(stored.IsInStock);
@@ -123,7 +134,7 @@ namespace ePriTrackerBackend.Tests.Services
             var product = Tracked("1", 1000, inStock: false);
             _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { Price = 1000 };
 
-            await Job().UpdateAllTrackedProductPricesAsync();
+            await Job().ProcessPendingProductsAsync();
 
             Assert.True(Reload(product).IsInStock);
             Assert.Empty(_db.Fresh().PriceHistory);
@@ -139,7 +150,7 @@ namespace ePriTrackerBackend.Tests.Services
                 Description = "<p style=\"color:red\">Bài viết đầy đủ</p><script>alert(1)</script>"
             };
 
-            await Job().UpdateAllTrackedProductPricesAsync();
+            await Job().ProcessPendingProductsAsync();
 
             Assert.Equal("<p>Bài viết đầy đủ</p>", Reload(product).Description);
             Assert.Empty(_db.Fresh().PriceHistory);
@@ -153,7 +164,7 @@ namespace ePriTrackerBackend.Tests.Services
             _db.Context.SaveChanges();
             _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { Price = 1000 };
 
-            await Job().UpdateAllTrackedProductPricesAsync();
+            await Job().ProcessPendingProductsAsync();
 
             Assert.Equal("<p>Mô tả cũ</p>", Reload(product).Description);
         }
@@ -182,11 +193,11 @@ namespace ePriTrackerBackend.Tests.Services
             }
         }
 
-        private PriceCrawlerService Job(IPlatformScraper scraper)
+        private PriceCrawlerWorker Job(IPlatformScraper scraper)
         {
             var ctx = _db.Context;
-            return new PriceCrawlerService(new ProductRepository(ctx), new PriceHistoryRepository(ctx), new TrackedItemRepository(ctx), new EfUnitOfWork(ctx),
-                new SingleScraperResolver(scraper), NullLogger<PriceCrawlerService>.Instance);
+            return new PriceCrawlerWorker(new ProductRepository(ctx), new PriceHistoryRepository(ctx), new TrackedItemRepository(ctx), new EfUnitOfWork(ctx),
+                new SingleScraperResolver(scraper), _notifications, NullLogger<PriceCrawlerWorker>.Instance);
         }
 
         [Fact]
@@ -198,7 +209,7 @@ namespace ePriTrackerBackend.Tests.Services
             batch.Prices[FakePlatformScraper.Normalized("1")] = new BatchPriceResult { Product = new ScrapedProduct { Price = 900 }, PlatformProductId = "131954" };
             _scraper.Products[FakePlatformScraper.Normalized("2")] = new ScrapedProduct { Price = 450 };
 
-            await Job(batch).UpdateAllTrackedProductPricesAsync();
+            await Job(batch).ProcessPendingProductsAsync();
 
             var first = Reload(inBatch);
             Assert.Equal(900m, first.LatestPrice);
@@ -217,7 +228,7 @@ namespace ePriTrackerBackend.Tests.Services
             var batch = new FakeBatchScraper(_scraper);
             batch.Prices[FakePlatformScraper.Normalized("1")] = new BatchPriceResult { Product = new ScrapedProduct { Price = 1000 }, PlatformProductId = "42" };
 
-            await Job(batch).UpdateAllTrackedProductPricesAsync();
+            await Job(batch).ProcessPendingProductsAsync();
 
             Assert.Equal("42", Assert.Single(batch.Requests).PlatformProductId);
         }
@@ -229,7 +240,7 @@ namespace ePriTrackerBackend.Tests.Services
             var batch = new FakeBatchScraper(_scraper) { Failure = new HttpRequestException("API đổi") };
             _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { Price = 800 };
 
-            await Job(batch).UpdateAllTrackedProductPricesAsync();
+            await Job(batch).ProcessPendingProductsAsync();
 
             Assert.Equal(800m, Reload(product).LatestPrice);
             Assert.Null(Reload(product).PlatformProductId);
@@ -244,7 +255,7 @@ namespace ePriTrackerBackend.Tests.Services
             var batch = new FakeBatchScraper(_scraper);
             batch.Prices[FakePlatformScraper.Normalized("1")] = new BatchPriceResult { Product = new ScrapedProduct { Price = 990 }, PlatformProductId = "1" };
 
-            await Job(batch).UpdateAllTrackedProductPricesAsync();
+            await Job(batch).ProcessPendingProductsAsync();
 
             Assert.Equal("<p>Mô tả đầy đủ</p>", Reload(product).Description);
         }
@@ -255,12 +266,99 @@ namespace ePriTrackerBackend.Tests.Services
             var product = Tracked("1", 0, inStock: false);
             _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { Price = 4890000, IsAvailable = true };
 
-            await Job().UpdateAllTrackedProductPricesAsync();
+            await Job().ProcessPendingProductsAsync();
 
             var stored = Reload(product);
             Assert.Equal(4890000m, _db.Fresh().Item.Single(i => i.ProductId == product.ProductId).InitialPrice);
             Assert.Equal(4890000m, stored.LatestPrice);
             Assert.True(stored.IsInStock);
+        }
+
+        // ===== Lịch cào theo Tier =====
+
+        [Fact]
+        public async Task OnlyDueProducts_AreCrawled()
+        {
+            var due = Tracked("1", 1000);
+            var notYet = Tracked("2", 1000);
+            notYet.NextCrawlAt = DateTimeOffset.UtcNow.AddHours(1);
+            _db.Context.SaveChanges();
+            _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { Price = 1000 };
+            _scraper.Products[FakePlatformScraper.Normalized("2")] = new ScrapedProduct { Price = 1000 };
+
+            await Job().ProcessPendingProductsAsync();
+
+            Assert.Equal(new[] { FakePlatformScraper.Normalized("1") }, _scraper.RequestedUrls);
+        }
+
+        [Fact]
+        public async Task AfterCrawl_NextCrawlScheduledByTier()
+        {
+            var user = _db.AddUser("u@test.vn");
+            var product = _db.AddProduct(FakePlatformScraper.Normalized("1"), price: 1000);
+            _db.Track(user, product, targetPrice: 980); // cách mục tiêu 2% → Tier 1, 60 phút
+            _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { Price = 1000 };
+            var before = DateTimeOffset.UtcNow;
+
+            await Job().ProcessPendingProductsAsync();
+
+            var stored = Reload(product);
+            Assert.Equal(1, stored.CurrentTier);
+            Assert.Equal(60, stored.CrawlIntervalMinutes);
+            Assert.InRange(stored.NextCrawlAt!.Value, before.AddMinutes(59), DateTimeOffset.UtcNow.AddMinutes(61));
+        }
+
+        [Fact]
+        public async Task FailedFetch_RetriedAfter30Minutes_KeepsPriceAndTier()
+        {
+            var product = Tracked("1", 1000); // scraper không có link này → lỗi
+            int tierBefore = Reload(product).CurrentTier;
+            var before = DateTimeOffset.UtcNow;
+
+            await Job().ProcessPendingProductsAsync();
+
+            var stored = Reload(product);
+            Assert.Equal(1000m, stored.LatestPrice);
+            Assert.Equal(tierBefore, stored.CurrentTier);
+            Assert.InRange(stored.NextCrawlAt!.Value, before.AddMinutes(29), DateTimeOffset.UtcNow.AddMinutes(31));
+        }
+
+        [Fact]
+        public async Task PriceDrop_Notifies_PriceRise_DoesNot()
+        {
+            var dropped = Tracked("1", 1000);
+            var raised = Tracked("2", 1000);
+            _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { Price = 800 };
+            _scraper.Products[FakePlatformScraper.Normalized("2")] = new ScrapedProduct { Price = 1200 };
+
+            await Job().ProcessPendingProductsAsync();
+
+            Assert.Equal(new[] { (dropped.ProductId, 800m) }, _notifications.Calls);
+        }
+
+        [Theory]
+        [InlineData(1000, 1000, 1, 0, 30)]      // đã chạm mục tiêu
+        [InlineData(1000, 960, 1, 1, 60)]       // cách 4%
+        [InlineData(1000, 900, 1, 2, 240)]      // cách 10%
+        [InlineData(1000, 500, 1, 3, 1440)]     // xa mục tiêu
+        [InlineData(1000, 500, 51, 1, 60)]      // xa nhưng rất nhiều người theo dõi
+        [InlineData(1000, null, 1, 2, 120)]     // chưa ai đặt mục tiêu
+        [InlineData(1000, null, 11, 2, 60)]
+        [InlineData(1000, 900, 0, 4, 43200)]    // không còn ai theo dõi
+        public void CalculateTier_ByGapToTarget(int price, int? target, int trackers, int expectedTier, int expectedMinutes)
+        {
+            Assert.Equal((expectedTier, expectedMinutes), PriceCrawlerWorker.CalculateTier(price, target, trackers));
+        }
+
+        [Fact]
+        public void HangfireFilters_PreventOverlappingRunsAndRetries()
+        {
+            // Job chạy mỗi phút: lượt trước chưa xong thì lượt sau phải chờ, và lỗi không được retry dồn.
+            // Attribute phải nằm trên interface – Hangfire đọc filter từ method của kiểu đã đăng ký (IPriceCrawlerWorker).
+            var method = typeof(IPriceCrawlerWorker).GetMethod(nameof(IPriceCrawlerWorker.ProcessPendingProductsAsync))!;
+            Assert.NotNull(method.GetCustomAttributes(typeof(Hangfire.DisableConcurrentExecutionAttribute), false).SingleOrDefault());
+            var retry = (Hangfire.AutomaticRetryAttribute)method.GetCustomAttributes(typeof(Hangfire.AutomaticRetryAttribute), false).Single();
+            Assert.Equal(0, retry.Attempts);
         }
     }
 }

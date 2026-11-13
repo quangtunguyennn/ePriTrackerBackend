@@ -48,4 +48,35 @@ namespace ePriTrackerBackend.Scraping.CellphoneS
         /// <summary>Giá flash sale. 0 trước giờ mở bán (CellphoneS giấu giá cho tới khi khung bắt đầu).</summary>
         public decimal FlashPrice { get; init; }
     }
+
+    /// <summary>Một nhóm hot sale bày trên trang chủ (tab "BẮT NHỊP SĂN DEAL", "HOT SALE CUỐI TUẦN" – cấu hình config_hotsale_flashsale).</summary>
+    public sealed class CellphoneSHotSaleGroupRef
+    {
+        /// <summary>Mã nhóm cho sale_off_group, vd "pk_flash_sale".</summary>
+        public string GroupUd { get; init; }
+
+        /// <summary>Tên hiển thị, vd "HOT SALE CUỐI TUẦN – Phụ kiện, PC" hoặc "BẮT NHỊP SĂN DEAL".</summary>
+        public string Title { get; init; }
+    }
+
+    /// <summary>sale_off_group: nhóm sản phẩm giá giảm có thời hạn (hot sale), giá bán theo miền.</summary>
+    public sealed class CellphoneSSaleOffGroup
+    {
+        public string Ud { get; init; }
+        public string Name { get; init; }
+        public DateTimeOffset? FromDate { get; init; }
+        public DateTimeOffset? ToDate { get; init; }
+        public IReadOnlyList<CellphoneSSaleOffItem> Items { get; init; } = Array.Empty<CellphoneSSaleOffItem>();
+    }
+
+    public sealed class CellphoneSSaleOffItem
+    {
+        public long ProductId { get; init; }
+
+        /// <summary>Giá hot sale theo miền của tỉnh mặc định (TP.HCM → miền Nam), thiếu thì miền Bắc.</summary>
+        public decimal SalePrice { get; init; }
+
+        /// <summary>Ghi chú / quà kèm (thường rỗng).</summary>
+        public string Note { get; init; }
+    }
 }

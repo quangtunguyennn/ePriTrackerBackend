@@ -59,6 +59,66 @@ namespace ePriTrackerBackend.Tests.Scraping
             Assert.Equal(new[] { "flashsale_cuoituan1_t7", "flashsale_cuoituan2_cn" }, CellphoneSApiParser.ParseHomeFlashSaleGroupUds(Json(json)));
         }
 
+        // Rút gọn từ cấu hình thật config_hotsale_flashsale (01/11/2026)
+        private const string HotSaleConfig = """
+            {"data":{"dynamic_config":{"value_json":{
+              "flashSaleHome":{"web":[{"groupUd":"flashsale_cuoituan1_t7"}]},
+              "hotsale":{"isActive":true,"title_if_has_fs":"HOT SALE CUỐI TUẦN","listGroup":{
+                "1":{"groupTitle":"Điện thoại, Tablet","groupUd":"flashsale_samsung"},
+                "2":{"groupTitle":"Phụ kiện, PC","groupUd":"pk_flash_sale"},
+                "3":{"groupTitle":"Gia dụng, Điện máy","groupUd":"hotsale_gia_dung_hang_tuan"}}},
+              "hotsaleTrend":{"isActive":true,"title_if_has_fs":"BẮT NHỊP SĂN DEAL","listGroup":{"1":{"groupTitle":"BẮT NHỊP SĂN DEAL","groupUd":"hotsale_mua_vu"}}},
+              "hotsaleTat":{"isActive":false,"title_if_has_fs":"TẮT","listGroup":{"1":{"groupTitle":"x","groupUd":"tat"}}},
+              "tab_order":["flashSaleHome","hotsaleTrend","hotsale","hotsaleTat"]
+            }}}}
+            """;
+
+        [Fact]
+        public void HomeHotSaleGroups_InTabOrder_TitledByTab_SkipsInactiveAndFlashSale()
+        {
+            var groups = CellphoneSApiParser.ParseHomeHotSaleGroups(Json(HotSaleConfig));
+
+            Assert.Equal(new[] { "hotsale_mua_vu", "flashsale_samsung", "pk_flash_sale", "hotsale_gia_dung_hang_tuan" }, groups.Select(g => g.GroupUd));
+            Assert.Equal(new[] { "BẮT NHỊP SĂN DEAL", "HOT SALE CUỐI TUẦN – Điện thoại, Tablet", "HOT SALE CUỐI TUẦN – Phụ kiện, PC", "HOT SALE CUỐI TUẦN – Gia dụng, Điện máy" },
+                groups.Select(g => g.Title));
+        }
+
+        [Fact]
+        public void HomeHotSaleGroups_ConfigAsString_AndMissing()
+        {
+            string asString = "{\"data\":{\"dynamic_config\":{\"value_json\":" + System.Text.Json.JsonSerializer.Serialize(
+                "{\"hotsaleTrend\":{\"isActive\":true,\"title_if_has_fs\":\"BẮT NHỊP SĂN DEAL\",\"listGroup\":{\"1\":{\"groupTitle\":\"BẮT NHỊP SĂN DEAL\",\"groupUd\":\"hotsale_mua_vu\"}}}}") + "}}}";
+            Assert.Equal("hotsale_mua_vu", Assert.Single(CellphoneSApiParser.ParseHomeHotSaleGroups(Json(asString))).GroupUd);
+            Assert.Empty(CellphoneSApiParser.ParseHomeHotSaleGroups(Json("""{"data":{"dynamic_config":null}}""")));
+        }
+
+        [Fact]
+        public void SaleOffGroup_ReadsDates_SouthPrice_Note()
+        {
+            var group = CellphoneSApiParser.ParseSaleOffGroup(Json("""
+                {"data":{"sale_off_group":{
+                  "group":{"product_group_ud":"pk_flash_sale","product_group_name":"HOT SALE CUỐI TUẦN PHỤ KIỆN","from_date":"2026-10-30T00:00:00+07:00","to_date":"2026-11-01T22:00:00+07:00"},
+                  "groupDetails":[
+                    {"product_id":112721,"sale_price_mien_bac":6790000,"sale_price_mien_nam":6690000,"additional_text":"","gift":""},
+                    {"product_id":112727,"sale_price_mien_bac":7590000,"sale_price_mien_nam":0,"additional_text":"","gift":"Tặng túi chống sốc"},
+                    {"product_id":0,"sale_price_mien_nam":1}
+                  ]}}}
+                """))!;
+
+            Assert.Equal("pk_flash_sale", group.Ud);
+            Assert.Equal(new DateTimeOffset(2026, 11, 1, 22, 0, 0, TimeSpan.FromHours(7)), group.ToDate);
+            Assert.Equal(new DateTimeOffset(2026, 10, 30, 0, 0, 0, TimeSpan.FromHours(7)), group.FromDate);
+            Assert.Equal(2, group.Items.Count);
+            Assert.Equal(6690000m, group.Items[0].SalePrice);          // giá miền Nam (TP.HCM)
+            Assert.Null(group.Items[0].Note);
+            Assert.Equal(7590000m, group.Items[1].SalePrice);          // thiếu giá miền Nam → miền Bắc
+            Assert.Equal("Tặng túi chống sốc", group.Items[1].Note);
+
+            // API báo lỗi → ném (như mọi truy vấn khác); nhóm không có dữ liệu → null
+            Assert.Throws<InvalidOperationException>(() => CellphoneSApiParser.ParseSaleOffGroup(Json("""{"errors":[{"message":"Unable to process request"}],"data":{"sale_off_group":null}}""")));
+            Assert.Null(CellphoneSApiParser.ParseSaleOffGroup(Json("""{"data":{"sale_off_group":null}}""")));
+        }
+
         [Fact]
         public void FlashSaleGroup_ReadsPrograms_WithOffsets()
         {

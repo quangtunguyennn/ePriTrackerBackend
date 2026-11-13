@@ -10,6 +10,9 @@ namespace ePriTrackerBackend.Scraping.CellphoneS
     /// - "Deal sốc mỗi ngày": danh sách do website TỰ TÍNH từ nhiều danh mục (không phải chiến dịch có API) → đọc từ trang chủ
     ///   đã render (<see cref="IPageRenderer"/>), thưa (mỗi <see cref="HomeRenderInterval"/>), giữa các lần dùng kết quả cũ.
     /// - API flash sale lỗi → render trang chủ ngay và lấy flash sale từ đó (bộ đọc HTML <see cref="CellphoneSHomeEventParser"/>).
+    /// - Hot sale (tab "BẮT NHỊP SĂN DEAL", "HOT SALE CUỐI TUẦN – Phụ kiện, PC"...): mỗi nhóm trong cấu hình trang chủ là một sự kiện,
+    ///   qua GraphQL sale_off_group (giá hot sale + giờ kết thúc chính xác); API lỗi một lượt → dùng lại kết quả lần trước còn hạn
+    ///   (không thì job sẽ xoá nhầm sự kiện có giờ chính xác vì "sàn không còn trả về").
     /// Ưu đãi thẻ ngân hàng (/uu-dai-doi-tac) không lấy: giá trên trang không giảm.
     /// </summary>
     public sealed class CellphoneSEventSource : IAutoEventSource
@@ -29,6 +32,7 @@ namespace ePriTrackerBackend.Scraping.CellphoneS
         private IReadOnlyList<ScrapedEvent> _homeEvents = Array.Empty<ScrapedEvent>();
         private DateTimeOffset _lastRender = DateTimeOffset.MinValue;        // lần render THÀNH CÔNG gần nhất (tuổi của deal)
         private DateTimeOffset _lastRenderAttempt = DateTimeOffset.MinValue; // render lỗi cũng chờ đủ khoảng mới thử lại
+        private IReadOnlyList<ScrapedEvent> _lastHotSales = Array.Empty<ScrapedEvent>(); // dự phòng khi API hot sale lỗi
 
         public CellphoneSEventSource(ICellphoneSApi api, IPageRenderer renderer, ILogger<CellphoneSEventSource> logger, TimeProvider timeProvider = null)
         {
@@ -79,7 +83,94 @@ namespace ePriTrackerBackend.Scraping.CellphoneS
             }
 
             var deals = now - _lastRender < HomeEventsMaxAge ? _homeEvents : Array.Empty<ScrapedEvent>();
-            return (flashSales ?? homeFlashSales ?? Array.Empty<ScrapedEvent>()).Concat(deals).ToList();
+            var hotSales = await GetHotSalesAsync(now, cancellationToken);
+            return (flashSales ?? homeFlashSales ?? Array.Empty<ScrapedEvent>()).Concat(hotSales).Concat(deals).ToList();
+        }
+
+        private async Task<IReadOnlyList<ScrapedEvent>> GetHotSalesAsync(DateTimeOffset now, CancellationToken cancellationToken)
+        {
+            try
+            {
+                _lastHotSales = await GetHotSalesFromApiAsync(now, cancellationToken);
+                return _lastHotSales;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogWarning(ex, "⚠️ API hot sale CellphoneS lỗi – dùng lại kết quả lần trước.");
+                return _lastHotSales.Where(e => e.EndsAt > now).ToList();
+            }
+        }
+
+        /// <summary>
+        /// Cấu hình trang chủ → các nhóm hot sale → nhóm ĐANG chạy (from_date ≤ bây giờ &lt; to_date) → sản phẩm (tên, ảnh, link, giá gốc
+        /// tra theo lô) với giá hot sale của nhóm.
+        /// </summary>
+        private async Task<IReadOnlyList<ScrapedEvent>> GetHotSalesFromApiAsync(DateTimeOffset now, CancellationToken cancellationToken)
+        {
+            var events = new List<ScrapedEvent>();
+
+            foreach (var groupRef in await _api.GetHomeHotSaleGroupsAsync(cancellationToken))
+            {
+                string url = $"{CellphoneSHomeEventParser.HomeUrl}#hotsale-{groupRef.GroupUd}";
+                try
+                {
+                    var evt = await GetHotSaleEventAsync(groupRef, url, now, cancellationToken);
+                    if (evt != null) events.Add(evt);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // Một nhóm lỗi không kéo theo các nhóm khác; nhóm này giữ kết quả lần trước còn hạn
+                    _logger.LogWarning("⚠️ Không đọc được hot sale {Group}: {Message}", groupRef.GroupUd, ex.Message);
+                    var previous = _lastHotSales.FirstOrDefault(e => e.Url == url && e.EndsAt > now);
+                    if (previous != null) events.Add(previous);
+                }
+            }
+
+            return events;
+        }
+
+        private async Task<ScrapedEvent> GetHotSaleEventAsync(CellphoneSHotSaleGroupRef groupRef, string url, DateTimeOffset now, CancellationToken cancellationToken)
+        {
+            var group = await _api.GetSaleOffGroupAsync(groupRef.GroupUd, cancellationToken);
+            if (group?.ToDate == null || now >= group.ToDate || (group.FromDate != null && group.FromDate > now) || group.Items.Count == 0) return null;
+
+            var catalog = (await _api.GetProductsByIdsAsync(group.Items.Select(i => i.ProductId).ToList(), cancellationToken))
+                .GroupBy(p => p.ProductId)
+                .ToDictionary(g => g.Key, g => g.First());
+
+            var products = group.Items
+                .Select(i => catalog.TryGetValue(i.ProductId, out var c) ? ToScrapedProduct(i, c) : null)
+                .Where(p => p != null)
+                .ToList();
+
+            return new ScrapedEvent
+            {
+                Title = groupRef.Title,
+                Url = url,
+                ImageUrl = products.FirstOrDefault()?.ImageUrl,
+                EndsAt = group.ToDate,
+                Products = products
+            };
+        }
+
+        private static ScrapedProduct ToScrapedProduct(CellphoneSSaleOffItem item, CellphoneSApiProduct catalog)
+        {
+            var product = CellphoneSScraper.ToScrapedProduct(catalog);
+            if (product == null) return null;
+
+            decimal price = item.SalePrice > 0 ? item.SalePrice : product.Price ?? 0;
+            decimal original = Math.Max(product.OriginalPrice ?? 0, product.Price ?? 0); // giá niêm yết / giá bán thường
+
+            return new ScrapedProduct
+            {
+                ExternalId = product.ExternalId,
+                Name = product.Name,
+                Price = price > 0 ? price : null,
+                OriginalPrice = original > price ? original : null,
+                ImageUrl = product.ImageUrl,
+                Url = product.Url,
+                Description = item.Note
+            };
         }
 
         /// <summary>

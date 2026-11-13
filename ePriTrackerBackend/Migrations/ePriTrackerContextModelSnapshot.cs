@@ -100,6 +100,15 @@ namespace ePriTrackerBackend.Migrations
                     b.Property<decimal?>("InitialPrice")
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<bool>("IsTargetNotified")
+                        .HasColumnType("bit");
+
+                    b.Property<DateTimeOffset?>("LastNotifiedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<decimal?>("LastNotifiedPrice")
+                        .HasColumnType("decimal(18,2)");
+
                     b.Property<Guid>("ProductId")
                         .HasColumnType("uniqueidentifier");
 
@@ -116,6 +125,40 @@ namespace ePriTrackerBackend.Migrations
                     b.HasIndex("UserId");
 
                     b.ToTable("Item");
+                });
+
+            modelBuilder.Entity("ePriTrackerBackend.Models.Entities.Notification", b =>
+                {
+                    b.Property<Guid>("NotificationId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<bool>("IsRead")
+                        .HasColumnType("bit");
+
+                    b.Property<Guid?>("ProductId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("nvarchar(255)");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("NotificationId");
+
+                    b.HasIndex("UserId", "CreatedAt");
+
+                    b.ToTable("Notification");
                 });
 
             modelBuilder.Entity("ePriTrackerBackend.Models.Entities.PriceHistory", b =>
@@ -148,8 +191,17 @@ namespace ePriTrackerBackend.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uniqueidentifier");
 
+                    b.Property<int>("ActiveTrackersCount")
+                        .HasColumnType("int");
+
                     b.Property<DateTime?>("AddedAt")
                         .HasColumnType("datetime2");
+
+                    b.Property<int>("CrawlIntervalMinutes")
+                        .HasColumnType("int");
+
+                    b.Property<int>("CurrentTier")
+                        .HasColumnType("int");
 
                     b.Property<string>("Description")
                         .HasColumnType("nvarchar(max)");
@@ -167,6 +219,12 @@ namespace ePriTrackerBackend.Migrations
                     b.Property<decimal?>("LatestPrice")
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<decimal?>("MaxTargetPrice")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<DateTimeOffset?>("NextCrawlAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<DateTimeOffset?>("OutOfStockSince")
                         .HasColumnType("datetimeoffset");
 
@@ -183,6 +241,8 @@ namespace ePriTrackerBackend.Migrations
                         .HasColumnType("nvarchar(max)");
 
                     b.HasKey("ProductId");
+
+                    b.HasIndex("NextCrawlAt", "ActiveTrackersCount");
 
                     b.ToTable("Product");
                 });

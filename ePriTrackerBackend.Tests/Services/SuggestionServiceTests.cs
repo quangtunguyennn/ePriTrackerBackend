@@ -3,6 +3,7 @@ using ePriTrackerBackend.Repositories;
 using ePriTrackerBackend.Scraping.Abstractions;
 using ePriTrackerBackend.Services.Suggestions;
 using ePriTrackerBackend.Tests.Helpers;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace ePriTrackerBackend.Tests.Services
@@ -28,14 +29,17 @@ namespace ePriTrackerBackend.Tests.Services
         public SuggestionServiceTests()
         {
             var ctx = _db.Context;
-            _service = new SuggestionService(new ProductRepository(ctx), new SuggestionRepository(ctx), _finder, new EfUnitOfWork(ctx), new SingleScraperResolver(new FakePlatformScraper()), NullLogger<SuggestionService>.Instance);
+            _service = new SuggestionService(new ProductRepository(ctx), new SuggestionRepository(ctx), _finder, new EfUnitOfWork(ctx), new SingleScraperResolver(new FakePlatformScraper()),
+                new ConfigurationBuilder().Build(), NullLogger<SuggestionService>.Instance); // không cấu hình → mặc định 30 phút
         }
 
         public void Dispose() => _db.Dispose();
 
-        private static SuggestionProduct Suggestion(Product product, string name, decimal price) => new()
+        /// <param name="ageMinutes">Gợi ý được cào cách đây bao nhiêu phút (mặc định: vừa cào).</param>
+        private static SuggestionProduct Suggestion(Product product, string name, decimal price, int ageMinutes = 0) => new()
         {
-            SuggestionProductId = Guid.NewGuid(), ProductId = product.ProductId, ProductName = name, Price = price, ImageURL = "i", ProductLink = "l"
+            SuggestionProductId = Guid.NewGuid(), ProductId = product.ProductId, ProductName = name, Price = price, ImageURL = "i", ProductLink = "l",
+            LastUpdatedAt = DateTimeOffset.UtcNow.AddMinutes(-ageMinutes)
         };
 
         [Fact]
@@ -88,6 +92,91 @@ namespace ePriTrackerBackend.Tests.Services
 
             Assert.Empty(await _service.GetSuggestionsAsync(product.ProductId));
             Assert.Empty(_db.Fresh().SuggestionProduct);
+        }
+
+        [Fact]
+        public async Task Get_StaleSuggestions_ScrapedAgain_AndReplaced()
+        {
+            var product = _db.AddProduct("https://fake.vn/a-p1.html");
+            _db.Context.SuggestionProduct.Add(Suggestion(product, "Cũ", 600, ageMinutes: 31));
+            _db.Context.SaveChanges();
+            _finder.Behavior = p => new() { Suggestion(p, "Mới", 550) };
+
+            var result = await _service.GetSuggestionsAsync(product.ProductId);
+
+            Assert.Equal("Mới", Assert.Single(result).ProductName);
+            Assert.Equal("Mới", Assert.Single(_db.Fresh().SuggestionProduct).ProductName);
+        }
+
+        [Fact]
+        public async Task Get_SuggestionsYoungerThan30Minutes_NotScrapedAgain()
+        {
+            var product = _db.AddProduct("https://fake.vn/a-p1.html");
+            _db.Context.SuggestionProduct.Add(Suggestion(product, "Còn mới", 600, ageMinutes: 29));
+            _db.Context.SaveChanges();
+
+            var result = await _service.GetSuggestionsAsync(product.ProductId);
+
+            Assert.Equal("Còn mới", Assert.Single(result).ProductName);
+            Assert.Equal(0, _finder.Calls);
+        }
+
+        [Theory]
+        [InlineData(false)] // lỗi mạng / bị chặn
+        [InlineData(true)]  // cào được nhưng không ra gợi ý nào
+        public async Task Get_StaleSuggestions_ScrapeFailsOrEmpty_KeepsOldOnes(bool emptyResult)
+        {
+            var product = _db.AddProduct("https://fake.vn/a-p1.html");
+            _db.Context.SuggestionProduct.Add(Suggestion(product, "Cũ", 600, ageMinutes: 120));
+            _db.Context.SaveChanges();
+            _finder.Behavior = emptyResult ? _ => new() : _ => throw new HttpRequestException("403");
+
+            var result = await _service.GetSuggestionsAsync(product.ProductId);
+
+            Assert.Equal("Cũ", Assert.Single(result).ProductName);
+            Assert.Single(_db.Fresh().SuggestionProduct);
+        }
+
+        [Fact]
+        public async Task Get_ParallelRequests_ScrapeOnlyOnce()
+        {
+            // React StrictMode (dev) gọi API 2 lần cùng lúc khi mở trang
+            // (Request 1 dừng trong lúc cào – không đụng DB – để request 2 kịp tới và phải chờ khoá; SQLite test dùng chung một kết nối.)
+            var product = _db.AddProduct("https://fake.vn/a-p1.html");
+            using var scraping = new ManualResetEventSlim();
+            using var release = new ManualResetEventSlim();
+            _finder.Behavior = p => { scraping.Set(); release.Wait(TimeSpan.FromSeconds(5)); return new() { Suggestion(p, "Mới", 550) }; };
+            var ctx2 = _db.Fresh();
+            var second = new SuggestionService(new ProductRepository(ctx2), new SuggestionRepository(ctx2), _finder, new EfUnitOfWork(ctx2),
+                new SingleScraperResolver(new FakePlatformScraper()), new ConfigurationBuilder().Build(), NullLogger<SuggestionService>.Instance);
+
+            var first = Task.Run(() => _service.GetSuggestionsAsync(product.ProductId));
+            Assert.True(scraping.Wait(TimeSpan.FromSeconds(5)));
+            var secondCall = Task.Run(() => second.GetSuggestionsAsync(product.ProductId));
+            await Task.Delay(200); // request 2 đọc DB (chưa có gợi ý) rồi đứng chờ khoá
+            release.Set();
+            var results = await Task.WhenAll(first, secondCall);
+
+            Assert.Equal(1, _finder.Calls);
+            Assert.All(results, r => Assert.Equal("Mới", Assert.Single(r).ProductName));
+            Assert.Single(_db.Fresh().SuggestionProduct);
+        }
+
+        [Fact]
+        public async Task Get_CooldownComesFromConfiguration()
+        {
+            var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["Suggestions:RefreshCooldownMinutes"] = "0" }).Build();
+            var ctx = _db.Context;
+            var alwaysScrape = new SuggestionService(new ProductRepository(ctx), new SuggestionRepository(ctx), _finder, new EfUnitOfWork(ctx),
+                new SingleScraperResolver(new FakePlatformScraper()), config, NullLogger<SuggestionService>.Instance);
+            var product = _db.AddProduct("https://fake.vn/a-p1.html");
+            _db.Context.SuggestionProduct.Add(Suggestion(product, "Vừa cào", 600));
+            _db.Context.SaveChanges();
+            _finder.Behavior = p => new() { Suggestion(p, "Mới", 550) };
+
+            await alwaysScrape.GetSuggestionsAsync(product.ProductId);
+
+            Assert.Equal(1, _finder.Calls);
         }
 
         [Fact]

@@ -75,14 +75,22 @@ namespace ePriTrackerBackend.Tests.Helpers
             return product;
         }
 
-        /// <summary>Theo dõi như service thật: giá ban đầu = giá hiện tại (chưa có giá → null).</summary>
-        public void Track(User user, Product product)
+        /// <summary>
+        /// Theo dõi như service thật: giá ban đầu = giá hiện tại (chưa có giá → null); tăng số người theo dõi,
+        /// người đầu tiên → sản phẩm đến hạn cào ngay (job theo Tier).
+        /// </summary>
+        public void Track(User user, Product product, decimal? targetPrice = null)
         {
             Context.Item.Add(new Item
             {
                 ItemId = Guid.NewGuid(), UserId = user.UserId, ProductId = product.ProductId,
-                InitialPrice = product.LatestPrice > 0 ? product.LatestPrice : null
+                InitialPrice = product.LatestPrice > 0 ? product.LatestPrice : null,
+                TargetPrice = targetPrice
             });
+
+            product.ActiveTrackersCount++;
+            product.NextCrawlAt ??= DateTimeOffset.UtcNow.AddMinutes(-1);
+            if (targetPrice > (product.MaxTargetPrice ?? 0)) product.MaxTargetPrice = targetPrice;
             Context.SaveChanges();
         }
 
