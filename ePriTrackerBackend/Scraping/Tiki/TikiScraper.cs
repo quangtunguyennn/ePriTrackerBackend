@@ -59,9 +59,14 @@ namespace ePriTrackerBackend.Scraping.Tiki
                 ImageUrl = GetString(root, "thumbnail_url"),
                 Description = GetString(root, "description"),
                 Url = TikiUrlParser.NormalizeProductUrl(productId),
-                IsAvailable = ParseInventoryStatus(GetString(root, "inventory_status"))
+                IsAvailable = ParseInventoryStatus(GetString(root, "inventory_status")),
+                IsDiscontinued = IsDiscontinuedStatus(GetString(root, "inventory_status"))
             };
         }
+
+        /// <summary>"discontinue" / "discontinued" = Tiki ngừng kinh doanh sản phẩm (khác "out_of_stock", "upcoming").</summary>
+        public static bool IsDiscontinuedStatus(string status)
+            => status?.Trim().ToLowerInvariant() is "discontinue" or "discontinued";
 
         /// <summary>
         /// inventory_status của API chi tiết Tiki. "upcoming" (sắp về hàng) cũng tính là hết hàng – đã thống nhất với nhóm.

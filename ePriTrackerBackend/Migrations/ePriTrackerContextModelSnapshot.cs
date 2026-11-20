@@ -52,6 +52,9 @@ namespace ePriTrackerBackend.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<bool>("IsHiddenByAdmin")
+                        .HasColumnType("bit");
+
                     b.Property<bool>("IsPublished")
                         .HasColumnType("bit");
 
@@ -203,15 +206,27 @@ namespace ePriTrackerBackend.Migrations
                     b.Property<int>("CurrentTier")
                         .HasColumnType("int");
 
+                    b.Property<DateTimeOffset?>("DelistedAt")
+                        .HasColumnType("datetimeoffset");
+
                     b.Property<string>("Description")
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTimeOffset?>("FirstNotFoundAt")
+                        .HasColumnType("datetimeoffset");
 
                     b.Property<string>("ImageURL")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<bool>("IsDelisted")
+                        .HasColumnType("bit");
+
                     b.Property<bool>("IsInStock")
                         .HasColumnType("bit");
+
+                    b.Property<DateTimeOffset?>("LastCheckedAt")
+                        .HasColumnType("datetimeoffset");
 
                     b.Property<DateTimeOffset?>("LastUpdatedAt")
                         .HasColumnType("datetimeoffset");
@@ -224,6 +239,9 @@ namespace ePriTrackerBackend.Migrations
 
                     b.Property<DateTimeOffset?>("NextCrawlAt")
                         .HasColumnType("datetimeoffset");
+
+                    b.Property<int>("NotFoundCount")
+                        .HasColumnType("int");
 
                     b.Property<DateTimeOffset?>("OutOfStockSince")
                         .HasColumnType("datetimeoffset");

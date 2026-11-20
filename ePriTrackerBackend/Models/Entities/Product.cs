@@ -32,6 +32,27 @@ namespace ePriTrackerBackend.Models.Entities
         public DateTimeOffset? OutOfStockSince { get; set; }
 
         /// <summary>
+        /// Lần cuối lấy được dữ liệu từ sàn (dù giá không đổi). Khác <see cref="LastUpdatedAt"/> = lần cuối GIÁ ĐỔI.
+        /// Trang Admin dùng để đếm sản phẩm "lâu không cào được". Migration AddLastCheckedAtToProduct (dữ liệu cũ lấy = LastUpdatedAt).
+        /// </summary>
+        public DateTimeOffset? LastCheckedAt { get; set; }
+
+        /// <summary>
+        /// Sàn đã gỡ sản phẩm (trang trả 404/410, hoặc Tiki "ngừng kinh doanh") – xác nhận đủ <c>PriceCrawlerWorker.NotFoundChecksToDelist</c>
+        /// lần trải trên ít nhất 24 giờ. Đánh dấu thì NGƯNG CÀO hẳn, giữ giá + lịch sử cuối cùng; người dùng tự xoá khỏi danh sách.
+        /// Migration AddDelistedToProduct.
+        /// </summary>
+        public bool IsDelisted { get; set; }
+
+        public DateTimeOffset? DelistedAt { get; set; }
+
+        /// <summary>Số lần liên tiếp sàn báo "không còn" (đặt lại 0 khi cào được bình thường).</summary>
+        public int NotFoundCount { get; set; }
+
+        /// <summary>Lần đầu của chuỗi "không còn" hiện tại – để kiểm tra đã đủ 24 giờ chưa.</summary>
+        public DateTimeOffset? FirstNotFoundAt { get; set; }
+
+        /// <summary>
         /// Mã sản phẩm trên sàn dùng cho lấy giá theo lô (vd CellphoneS product_id). Job giá tự tra và lưu lần đầu; null với sàn không cần.
         /// </summary>
         [MaxLength(50)]

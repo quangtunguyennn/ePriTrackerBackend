@@ -3,6 +3,7 @@ using ePriTrackerBackend.Models.DTOs;
 using ePriTrackerBackend.Models.Entities;
 using ePriTrackerBackend.Repositories;
 using ePriTrackerBackend.Scraping.Abstractions;
+using ePriTrackerBackend.Scraping.Core;
 
 namespace ePriTrackerBackend.Services.Products
 {
@@ -26,6 +27,7 @@ namespace ePriTrackerBackend.Services.Products
     public class ProductTrackingService : IProductTrackingService
     {
         public const string InvalidLinkMessage = "Link sản phẩm không hợp lệ hoặc sàn chưa được hỗ trợ.";
+        public const string DelistedMessage = "Sản phẩm không còn được bán trên sàn.";
         private static readonly Regex CampaignCodeRegex = new Regex(@"itm_campaign=([^&]+)", RegexOptions.Compiled);
 
         private readonly IUserRepository _users;
@@ -88,6 +90,11 @@ namespace ePriTrackerBackend.Services.Products
                 _products.Add(product);
                 AddInitialPriceHistory(product);
             }
+            else if (product.IsDelisted)
+            {
+                // Đã đánh dấu "không còn trên sàn": kiểm tra lại ngay – sàn vẫn gỡ → báo lỗi, sàn mở lại trang → cào lại bình thường
+                await EnsureBackOnPlatformAsync(scraper, product);
+            }
 
             if (await _trackedItems.ExistsAsync(user.UserId, product.ProductId)) return;
 
@@ -134,6 +141,11 @@ namespace ePriTrackerBackend.Services.Products
                 product = await TryScrapeNewProductAsync(scraper, normalizedLink) ?? ProductFromDeal(deal, normalizedLink);
                 _products.Add(product);
                 AddInitialPriceHistory(product);
+            }
+            else if (product.IsDelisted)
+            {
+                // Deal đang chạy trên sàn = sản phẩm đã được bán lại → bỏ đánh dấu, job giá cào lại ngay
+                Reactivate(product);
             }
 
             if (await _trackedItems.ExistsAsync(userId, product.ProductId))
@@ -263,6 +275,38 @@ namespace ePriTrackerBackend.Services.Products
             });
         }
 
+        /// <summary>
+        /// Sản phẩm đã đánh dấu "không còn trên sàn" mà có người thêm lại: cào thử ngay. Vẫn 404 / Tiki ngừng kinh doanh → ném
+        /// <see cref="DelistedMessage"/>; cào được → bỏ đánh dấu để job giá cập nhật lại; lỗi khác (mạng, bị chặn) → ném lỗi gốc như thêm sản phẩm mới.
+        /// </summary>
+        private async Task EnsureBackOnPlatformAsync(IPlatformScraper scraper, Product product)
+        {
+            ScrapedProduct scraped;
+            try
+            {
+                scraped = await scraper.GetProductAsync(product.ProductLink);
+            }
+            catch (Exception ex) when (ScrapeErrors.IsNotFound(ex))
+            {
+                throw new Exception(DelistedMessage);
+            }
+
+            if (scraped.IsDiscontinued) throw new Exception(DelistedMessage);
+
+            _logger.LogInformation("Sản phẩm từng bị gỡ đã có lại trên sàn, bỏ đánh dấu: {Url}", product.ProductLink);
+            Reactivate(product);
+        }
+
+        /// <summary>Bỏ đánh dấu "không còn trên sàn"; job giá cào lại ngay ở lượt kế tiếp.</summary>
+        private static void Reactivate(Product product)
+        {
+            product.IsDelisted = false;
+            product.DelistedAt = null;
+            product.NotFoundCount = 0;
+            product.FirstNotFoundAt = null;
+            product.NextCrawlAt = GetNowVn();
+        }
+
         private static async Task<Product> ScrapeNewProductAsync(IPlatformScraper scraper, string normalizedLink)
         {
             var scraped = await scraper.GetProductAsync(normalizedLink);
@@ -279,6 +323,7 @@ namespace ePriTrackerBackend.Services.Products
                 AddedAt = nowVn.DateTime, // Giờ VN
                 LatestPrice = price,
                 LastUpdatedAt = nowVn,    // Giờ VN
+                LastCheckedAt = nowVn,    // vừa cào được từ sàn
                 IsInStock = scraped.IsInStock,
                 OutOfStockSince = scraped.IsInStock ? null : nowVn, // Giờ VN
 

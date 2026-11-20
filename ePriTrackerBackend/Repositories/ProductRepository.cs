@@ -58,7 +58,7 @@ namespace ePriTrackerBackend.Repositories
             // nên nhẹ, rồi mới nạp đủ cột (kể cả mô tả dài) cho đúng số sản phẩm cần cào.
             var schedule = await _context.Product
                 .AsNoTracking()
-                .Where(p => p.ActiveTrackersCount > 0 && p.NextCrawlAt != null)
+                .Where(p => p.ActiveTrackersCount > 0 && p.NextCrawlAt != null && !p.IsDelisted) // đã gỡ khỏi sàn → ngưng cào
                 .Select(p => new { p.ProductId, p.NextCrawlAt })
                 .ToListAsync(cancellationToken);
 

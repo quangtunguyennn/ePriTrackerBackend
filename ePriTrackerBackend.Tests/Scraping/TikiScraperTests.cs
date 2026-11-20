@@ -80,6 +80,23 @@ namespace ePriTrackerBackend.Tests.Scraping
             Assert.False(product.IsAvailable);
             Assert.False(product.IsInStock);
             Assert.Equal(15999000m, product.Price);
+            Assert.False(product.IsDiscontinued); // sắp về hàng ≠ ngừng kinh doanh
+        }
+
+        [Theory]
+        [InlineData("discontinue", true)]
+        [InlineData("Discontinued", true)]
+        [InlineData("out_of_stock", false)]
+        [InlineData("upcoming", false)]
+        [InlineData("available", false)]
+        public async Task GetProductAsync_FlagsDiscontinued(string status, bool discontinued)
+        {
+            var fetcher = new FakeFetcher(_ => Json($"{{\"name\":\"SP\",\"price\":100000,\"inventory_status\":\"{status}\"}}"));
+
+            var product = await Create(fetcher).GetProductAsync("https://tiki.vn/sp-p1.html");
+
+            Assert.Equal(discontinued, product.IsDiscontinued);
+            if (discontinued) Assert.False(product.IsInStock); // vẫn tính là hết hàng như trước
         }
 
         [Fact]

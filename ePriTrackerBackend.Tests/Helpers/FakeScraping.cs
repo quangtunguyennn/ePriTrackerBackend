@@ -14,6 +14,9 @@ namespace ePriTrackerBackend.Tests.Helpers
         public Dictionary<string, ScrapedProduct> Products { get; } = new();
         public List<string> RequestedUrls { get; } = new();
 
+        /// <summary>Link (đã chuẩn hoá) mà sàn trả 404 – sản phẩm đã bị gỡ.</summary>
+        public HashSet<string> NotFoundUrls { get; } = new();
+
         public static string Normalized(string id) => $"https://fake.vn/product-p{id}.html";
 
         public string Platform => "Fake";
@@ -31,6 +34,8 @@ namespace ePriTrackerBackend.Tests.Helpers
         {
             RequestedUrls.Add(productUrl);
             TryNormalizeProductUrl(productUrl, out var normalized);
+            if (NotFoundUrls.Contains(normalized ?? ""))
+                return Task.FromException<ScrapedProduct>(new HttpRequestException("Response status code does not indicate success: 404 (Not Found).", null, System.Net.HttpStatusCode.NotFound));
             return Products.TryGetValue(normalized ?? "", out var product)
                 ? Task.FromResult(product)
                 : Task.FromException<ScrapedProduct>(new HttpRequestException("Lấy dữ liệu thất bại."));

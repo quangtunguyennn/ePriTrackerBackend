@@ -1,6 +1,7 @@
 ﻿using ePriTrackerBackend.Models.Entities;
 using ePriTrackerBackend.Repositories;
 using ePriTrackerBackend.Scraping.Abstractions;
+using ePriTrackerBackend.Scraping.Core;
 using ePriTrackerBackend.Services.Notification;
 using ePriTrackerBackend.Services.Products;
 using Hangfire;
@@ -28,6 +29,15 @@ namespace ePriTrackerBackend.Services.PriceCronJob
         private const int FetchChunkSize = 5; // cào lẻ song song (giới hạn tốc độ theo sàn nằm ở tầng HttpClient)
         private static readonly TimeSpan RetryAfterError = TimeSpan.FromMinutes(30);
 
+        /// <summary>
+        /// Sản phẩm bị gỡ (404/410 hoặc Tiki "ngừng kinh doanh"): kiểm tra đủ chừng này lần, cách đều <see cref="NotFoundRecheckInterval"/>
+        /// (0 – 6 – 12 – 18 – 24 giờ), lần cuối đã cách lần đầu ít nhất <see cref="NotFoundWindow"/> → đánh dấu "không còn trên sàn",
+        /// báo người theo dõi và NGƯNG CÀO. Một lần cào được bình thường ở giữa → đếm lại từ đầu. Lỗi khác (mạng, bị chặn) không tính.
+        /// </summary>
+        public const int NotFoundChecksToDelist = 5;
+        public static readonly TimeSpan NotFoundWindow = TimeSpan.FromHours(24);
+        public static readonly TimeSpan NotFoundRecheckInterval = TimeSpan.FromHours(6);
+
         private static readonly TimeZoneInfo VietnamTz = GetVietnamTimeZone();
 
         private static TimeZoneInfo GetVietnamTimeZone()
@@ -45,6 +55,7 @@ namespace ePriTrackerBackend.Services.PriceCronJob
         private readonly IPlatformScraperResolver _scrapers;
         private readonly INotificationService _notifications;
         private readonly ILogger<PriceCrawlerWorker> _logger;
+        private readonly IScraperMetrics _metrics;
 
         public PriceCrawlerWorker(
             IProductRepository products,
@@ -53,8 +64,10 @@ namespace ePriTrackerBackend.Services.PriceCronJob
             IUnitOfWork unitOfWork,
             IPlatformScraperResolver scrapers,
             INotificationService notifications,
-            ILogger<PriceCrawlerWorker> logger)
+            ILogger<PriceCrawlerWorker> logger,
+            IScraperMetrics metrics = null)
         {
+            _metrics = metrics ?? NullScraperMetrics.Instance;
             _products = products ?? throw new ArgumentNullException(nameof(products));
             _priceHistory = priceHistory ?? throw new ArgumentNullException(nameof(priceHistory));
             _trackedItems = trackedItems ?? throw new ArgumentNullException(nameof(trackedItems));
@@ -81,15 +94,15 @@ namespace ePriTrackerBackend.Services.PriceCronJob
             // Sản phẩm không có trong kết quả lô → cào lẻ (JSON-LD / API Tiki) bên dưới.
             var batchResults = await FetchBatchPricesAsync(products, cancellationToken);
 
-            int priceChanges = 0, priceDrops = 0, outOfStock = 0, failed = 0;
+            int priceChanges = 0, priceDrops = 0, outOfStock = 0, failed = 0, notFound = 0, delisted = 0;
             var chunks = products.Chunk(FetchChunkSize).ToList();
 
             for (int c = 0; c < chunks.Count; c++)
             {
                 var chunk = chunks[c];
                 var toFetch = chunk.Where(p => !batchResults.ContainsKey(p.ProductId)).ToList();
-                var fetched = (await Task.WhenAll(toFetch.Select(async product => (product.ProductId, Scraped: await FetchCurrentAsync(product.ProductLink, cancellationToken)))))
-                    .ToDictionary(x => x.ProductId, x => x.Scraped);
+                var fetched = (await Task.WhenAll(toFetch.Select(async product => (product.ProductId, Result: await FetchCurrentAsync(product.ProductLink, cancellationToken)))))
+                    .ToDictionary(x => x.ProductId, x => x.Result);
 
                 _firstPrices.Clear();
                 var now = GetNowVn();
@@ -97,6 +110,7 @@ namespace ePriTrackerBackend.Services.PriceCronJob
                 foreach (var product in chunk)
                 {
                     ScrapedProduct scraped;
+                    bool pageNotFound = false;
                     if (batchResults.TryGetValue(product.ProductId, out var batch))
                     {
                         scraped = batch.Product;
@@ -105,7 +119,15 @@ namespace ePriTrackerBackend.Services.PriceCronJob
                     }
                     else
                     {
-                        scraped = fetched.GetValueOrDefault(product.ProductId);
+                        (scraped, pageNotFound) = fetched.GetValueOrDefault(product.ProductId);
+                    }
+
+                    // Sàn báo trang không còn (404/410) → đếm thêm một lần kiểm tra, giữ nguyên giá
+                    if (pageNotFound)
+                    {
+                        notFound++;
+                        if (await RegisterNotFoundAsync(product, now)) delisted++;
+                        continue;
                     }
 
                     // Lỗi mạng / bị chặn / sàn chưa hỗ trợ → giữ nguyên giá, không kết luận là hết hàng; hẹn lại để khỏi chiếm chỗ mỗi phút
@@ -116,6 +138,7 @@ namespace ePriTrackerBackend.Services.PriceCronJob
                         continue;
                     }
 
+                    product.LastCheckedAt = now; // lấy được dữ liệu từ sàn (dù giá không đổi) – trang Admin dựa vào đây để đếm "lâu không cào được"
                     decimal oldPrice = product.LatestPrice ?? 0;
                     var outcome = ApplyScrapeResult(product, scraped, now);
                     ApplyDescription(product, scraped); // kết quả lô không có mô tả → giữ bản cũ
@@ -131,6 +154,15 @@ namespace ePriTrackerBackend.Services.PriceCronJob
                     }
                     if (!product.IsInStock) outOfStock++;
 
+                    // Tiki "ngừng kinh doanh": trang vẫn còn (đã ghi hết hàng ở trên) nhưng tính như một lần "không còn trên sàn"
+                    if (scraped.IsDiscontinued)
+                    {
+                        notFound++;
+                        if (await RegisterNotFoundAsync(product, now)) delisted++;
+                        continue;
+                    }
+
+                    ResetNotFound(product);
                     ScheduleNextCrawl(product, now);
                 }
 
@@ -147,8 +179,57 @@ namespace ePriTrackerBackend.Services.PriceCronJob
             }
 
             _logger.LogInformation(
-                "✅ [CRAWLER FINISHED] {Total} sản phẩm ({Batched} lấy theo lô) trong {Seconds:F1}s: {Changed} đổi giá, {Drops} giảm giá, {OutOfStock} hết hàng, {Failed} lỗi.",
-                products.Count, batchResults.Count, (GetNowVn() - startedAt).TotalSeconds, priceChanges, priceDrops, outOfStock, failed);
+                "✅ [CRAWLER FINISHED] {Total} sản phẩm ({Batched} lấy theo lô) trong {Seconds:F1}s: {Changed} đổi giá, {Drops} giảm giá, {OutOfStock} hết hàng, {Failed} lỗi, {NotFound} không còn trên sàn ({Delisted} vừa đánh dấu).",
+                products.Count, batchResults.Count, (GetNowVn() - startedAt).TotalSeconds, priceChanges, priceDrops, outOfStock, failed, notFound, delisted);
+        }
+
+        /// <summary>
+        /// Ghi một lần sàn báo "không còn". Đủ <see cref="NotFoundChecksToDelist"/> lần trải trên ít nhất <see cref="NotFoundWindow"/>
+        /// → đánh dấu, ngưng cào và báo người theo dõi; chưa đủ → hẹn kiểm tra lại sau <see cref="NotFoundRecheckInterval"/>.
+        /// </summary>
+        /// <returns>true nếu sản phẩm vừa được đánh dấu "không còn trên sàn".</returns>
+        private async Task<bool> RegisterNotFoundAsync(Product product, DateTimeOffset now)
+        {
+            if (!MarkNotFound(product, now))
+            {
+                _logger.LogWarning("🔍 Sàn báo không còn sản phẩm (lần {Count}/{Max}), kiểm tra lại lúc {Next}: {Url}",
+                    product.NotFoundCount, NotFoundChecksToDelist, product.NextCrawlAt, product.ProductLink);
+                return false;
+            }
+
+            _logger.LogWarning("🚫 Sản phẩm không còn trên sàn sau {Count} lần kiểm tra – ngưng cào, báo người theo dõi: {Url}",
+                product.NotFoundCount, product.ProductLink);
+            await _notifications.ProcessDelistedNotificationsAsync(product);
+            return true;
+        }
+
+        /// <summary>Quy tắc đếm "không còn trên sàn" (hàm thuần để test).</summary>
+        /// <returns>true nếu lần này đủ điều kiện đánh dấu.</returns>
+        public static bool MarkNotFound(Product product, DateTimeOffset now)
+        {
+            if (product.NotFoundCount <= 0 || product.FirstNotFoundAt == null)
+            {
+                product.NotFoundCount = 0;
+                product.FirstNotFoundAt = now;
+            }
+            product.NotFoundCount++;
+
+            if (product.NotFoundCount >= NotFoundChecksToDelist && now - product.FirstNotFoundAt.Value >= NotFoundWindow)
+            {
+                product.IsDelisted = true;
+                product.DelistedAt = now;
+                product.NextCrawlAt = null; // job giá bỏ qua – ngưng cào hẳn
+                return true;
+            }
+
+            product.NextCrawlAt = now.Add(NotFoundRecheckInterval);
+            return false;
+        }
+
+        private static void ResetNotFound(Product product)
+        {
+            product.NotFoundCount = 0;
+            product.FirstNotFoundAt = null;
         }
 
         /// <summary>
@@ -209,6 +290,8 @@ namespace ePriTrackerBackend.Services.PriceCronJob
                     list.Add(product);
                 }
 
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                string target = $"{requests.Count} sản phẩm";
                 try
                 {
                     var prices = await scraper.GetCurrentPricesAsync(requests, cancellationToken);
@@ -219,10 +302,18 @@ namespace ePriTrackerBackend.Services.PriceCronJob
                     }
 
                     _logger.LogInformation("📦 {Platform}: {Got}/{Total} sản phẩm lấy giá theo lô.", scraper.Platform, prices.Count, requests.Count);
+                    _metrics.Record(new ScrapeRecord
+                    {
+                        Platform = scraper.Platform, Operation = ScrapeOperations.BatchPrice, Success = true, Duration = stopwatch.Elapsed, Target = target
+                    });
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
                 {
                     _logger.LogWarning(ex, "⚠️ Lấy giá theo lô trên {Platform} lỗi – chuyển sang cào từng sản phẩm.", scraper.Platform);
+                    _metrics.Record(new ScrapeRecord
+                    {
+                        Platform = scraper.Platform, Operation = ScrapeOperations.BatchPrice, Success = false, Duration = stopwatch.Elapsed, Target = target, Error = ex.Message
+                    });
                 }
             }
 
@@ -288,25 +379,28 @@ namespace ePriTrackerBackend.Services.PriceCronJob
         }
 
         /// <summary>
-        /// Chọn đúng sàn theo link rồi lấy dữ liệu hiện tại. Link không thuộc sàn nào / không có ID / lỗi mạng → null (bỏ qua).
+        /// Chọn đúng sàn theo link rồi lấy dữ liệu hiện tại. Link không thuộc sàn nào / không có ID / lỗi mạng → Product null (bỏ qua);
+        /// sàn trả 404/410 → NotFound = true (sản phẩm có thể đã bị gỡ).
         /// </summary>
-        private async Task<ScrapedProduct> FetchCurrentAsync(string productUrl, CancellationToken cancellationToken)
+        private async Task<(ScrapedProduct Product, bool NotFound)> FetchCurrentAsync(string productUrl, CancellationToken cancellationToken)
         {
             if (!_scrapers.TryResolve(productUrl, out var scraper) || !scraper.TryNormalizeProductUrl(productUrl, out _))
             {
                 _logger.LogWarning("⚠️ Sàn chưa hỗ trợ hoặc link không hợp lệ: {Url}", productUrl);
-                return null;
+                return (null, false);
             }
 
             try
             {
                 // Bên trong scraper là Dual-Layer (tất cả chiến lược thất bại → ném lỗi → catch bên dưới trả null)
-                return await scraper.GetProductAsync(productUrl, cancellationToken);
+                return (await scraper.GetProductAsync(productUrl, cancellationToken), false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
-                _logger.LogWarning("⚠️ Không thể lấy dữ liệu từ {Platform} cho link {Url}: {Message}", scraper.Platform, productUrl, ex.Message);
-                return null;
+                bool notFound = ScrapeErrors.IsNotFound(ex);
+                if (!notFound)
+                    _logger.LogWarning("⚠️ Không thể lấy dữ liệu từ {Platform} cho link {Url}: {Message}", scraper.Platform, productUrl, ex.Message);
+                return (null, notFound);
             }
         }
     }

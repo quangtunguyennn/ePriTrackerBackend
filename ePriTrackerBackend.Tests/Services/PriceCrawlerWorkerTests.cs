@@ -28,6 +28,13 @@ namespace ePriTrackerBackend.Tests.Services
                 Calls.Add((product.ProductId, newPrice));
                 return Task.CompletedTask;
             }
+
+            public List<Guid> Delisted { get; } = new();
+            public Task ProcessDelistedNotificationsAsync(Product product)
+            {
+                Delisted.Add(product.ProductId);
+                return Task.CompletedTask;
+            }
         }
 
         private PriceCrawlerWorker Job() => Job(_scraper);
@@ -71,6 +78,11 @@ namespace ePriTrackerBackend.Tests.Services
             Assert.Equal(1000m, fresh.Item.Single(i => i.ProductId == changed.ProductId).InitialPrice); // job không đổi giá ban đầu
             Assert.Equal(50m, fresh.Product.Single(p => p.ProductId == untracked.ProductId).LatestPrice);
             Assert.All(fresh.Product, p => Assert.True(p.IsInStock)); // lỗi mạng / sàn lạ không bị coi là hết hàng
+
+            // Lần cào thành công được ghi dù giá không đổi; cào lỗi thì không
+            Assert.NotNull(fresh.Product.Single(p => p.ProductId == same.ProductId).LastCheckedAt);
+            Assert.NotNull(fresh.Product.Single(p => p.ProductId == changed.ProductId).LastCheckedAt);
+            Assert.Null(fresh.Product.Single(p => p.ProductId == failing.ProductId).LastCheckedAt);
 
             var history = Assert.Single(fresh.PriceHistory);
             Assert.Equal(changed.ProductId, history.ProductId);

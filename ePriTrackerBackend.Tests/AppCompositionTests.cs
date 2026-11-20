@@ -54,6 +54,7 @@ namespace ePriTrackerBackend.Tests
             Assert.NotNull(ActivatorUtilities.CreateInstance<ProductController>(sp));
             Assert.NotNull(ActivatorUtilities.CreateInstance<EventController>(sp));
             Assert.NotNull(ActivatorUtilities.CreateInstance<MetricsController>(sp));
+            Assert.NotNull(ActivatorUtilities.CreateInstance<AdminController>(sp));
 
             Assert.IsType<PriceCrawlerWorker>(sp.GetRequiredService<IPriceCrawlerWorker>());
             Assert.IsType<EventCacheService>(sp.GetRequiredService<IEventCacheService>());
