@@ -24,6 +24,12 @@ namespace ePriTrackerBackend.Models.Entities
 
         public bool IsPublished { get; set; } = false;
 
+        /// <summary>
+        /// Chỉ sự kiện sàn tự đăng: Admin bấm "Ẩn" → job đồng bộ vẫn cập nhật nhưng không hiện cho người dùng (IsPublished = false)
+        /// cho tới khi Admin bấm "Hiện". Migration AddIsHiddenByAdminToEvent.
+        /// </summary>
+        public bool IsHiddenByAdmin { get; set; }
+
         [MaxLength(100)]
         public string GroupZone { get; set; }
 

@@ -24,13 +24,22 @@ namespace ePriTrackerBackend.Scraping.Gearvn
         public static readonly TimeSpan ProductDetailsLifetime = TimeSpan.FromHours(6);
         public static readonly TimeSpan ResultLifetime = TimeSpan.FromMinutes(10);
 
+        /// <summary>
+        /// Sản phẩm đọc lỗi cũng được nhớ để không gọi lại ở mọi chương trình chứa nó và mọi lượt đồng bộ:
+        /// 404 (GearVN đã gỡ trang nhưng chương trình vẫn liệt kê) nhớ lâu; lỗi khác (mạng, bị chặn, trang lạ) nhớ ngắn rồi thử lại.
+        /// </summary>
+        public static readonly TimeSpan NotFoundLifetime = TimeSpan.FromHours(6);
+        public static readonly TimeSpan FailureLifetime = TimeSpan.FromMinutes(30);
+
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IPlatformScraper _productScraper;
         private readonly ILogger<GearvnEventSource> _logger;
         private readonly TimeProvider _time;
 
         private readonly SemaphoreSlim _gate = new(1, 1);
-        private readonly ConcurrentDictionary<string, (ScrapedProduct Product, DateTimeOffset FetchedAt)> _productDetails = new(StringComparer.OrdinalIgnoreCase);
+
+        // Product = null: lần đọc trước lỗi
+        private readonly ConcurrentDictionary<string, (ScrapedProduct Product, DateTimeOffset FetchedAt, TimeSpan Lifetime)> _productDetails = new(StringComparer.OrdinalIgnoreCase);
         private (IReadOnlyList<ScrapedEvent> Events, DateTimeOffset ReadAt)? _lastResult;
 
         public GearvnEventSource(IHttpClientFactory httpClientFactory, GearvnScraper productScraper, ILogger<GearvnEventSource> logger, TimeProvider timeProvider = null)
@@ -166,18 +175,22 @@ namespace ePriTrackerBackend.Scraping.Gearvn
 
         private async Task<ScrapedProduct> GetProductDetailsAsync(string url, DateTimeOffset now, CancellationToken cancellationToken)
         {
-            if (_productDetails.TryGetValue(url, out var cached) && now - cached.FetchedAt < ProductDetailsLifetime)
-                return cached.Product;
+            if (_productDetails.TryGetValue(url, out var cached) && now - cached.FetchedAt < cached.Lifetime)
+                return cached.Product; // null = lần trước đọc lỗi, chưa tới lúc thử lại
 
             try
             {
                 var product = await _productScraper.GetProductAsync(url, cancellationToken);
-                _productDetails[url] = (product, now);
+                _productDetails[url] = (product, now, ProductDetailsLifetime);
                 return product;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogWarning("[GearVN] Không đọc được sản phẩm khuyến mãi {Url}: {Message}", url, ex.Message);
+                bool notFound = ex is HttpRequestException { StatusCode: System.Net.HttpStatusCode.NotFound };
+                var retryAfter = notFound ? NotFoundLifetime : FailureLifetime;
+                _productDetails[url] = (null, now, retryAfter);
+                _logger.LogWarning("[GearVN] Không đọc được sản phẩm khuyến mãi {Url}: {Message} – thử lại sau {Minutes} phút.",
+                    url, ex.Message, retryAfter.TotalMinutes);
                 return null;
             }
         }

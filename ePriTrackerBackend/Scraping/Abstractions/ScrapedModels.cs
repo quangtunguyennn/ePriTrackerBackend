@@ -21,6 +21,12 @@ namespace ePriTrackerBackend.Scraping.Abstractions
         public bool? IsAvailable { get; init; }
 
         /// <summary>
+        /// Sàn báo NGỪNG KINH DOANH (Tiki inventory_status "discontinue") – Tiki không xoá trang nên đây là cách "gỡ" sản phẩm.
+        /// Vẫn tính là hết hàng (IsAvailable = false); job giá đếm như một lần "không còn trên sàn".
+        /// </summary>
+        public bool IsDiscontinued { get; init; }
+
+        /// <summary>
         /// Mua được ngay: có giá VÀ sàn không báo hết hàng. Không có giá (sàn trả 0 / thiếu giá) cũng tính là hết hàng.
         /// </summary>
         public bool IsInStock => Price > 0 && IsAvailable != false;

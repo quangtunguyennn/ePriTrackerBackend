@@ -13,9 +13,12 @@ namespace ePriTrackerBackend.Scraping.Core
         private readonly IReadOnlyList<IFetchStrategy> _strategies;
         private readonly IScraperMetrics _metrics;
         private readonly ILogger<HybridFetcher> _logger;
+        private readonly string _platform;
 
-        public HybridFetcher(IEnumerable<IFetchStrategy> strategies, IScraperMetrics metrics, ILogger<HybridFetcher> logger)
+        /// <param name="platform">Tên sàn – để trang Admin thống kê theo sàn.</param>
+        public HybridFetcher(IEnumerable<IFetchStrategy> strategies, IScraperMetrics metrics, ILogger<HybridFetcher> logger, string platform = null)
         {
+            _platform = platform ?? "?";
             _strategies = strategies?.ToList() ?? throw new ArgumentNullException(nameof(strategies));
             if (_strategies.Count == 0)
                 throw new ArgumentException("Cần ít nhất một IFetchStrategy.", nameof(strategies));
@@ -27,6 +30,7 @@ namespace ePriTrackerBackend.Scraping.Core
         public async Task<JsonElement> FetchJsonAsync(string path, FetchOptions options = null, CancellationToken cancellationToken = default)
         {
             options ??= FetchOptions.Default;
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
             for (int i = 0; ; i++)
             {
@@ -37,17 +41,30 @@ namespace ePriTrackerBackend.Scraping.Core
                 {
                     var result = await strategy.FetchJsonAsync(path, options, cancellationToken);
                     _metrics.RecordSuccess(strategy.Name);
+                    _metrics.Record(new ScrapeRecord
+                    {
+                        Platform = _platform, Operation = ScrapeOperations.Product, Success = true,
+                        Strategy = strategy.Name, UsedFallback = i > 0, Duration = stopwatch.Elapsed, Target = path
+                    });
                     return result;
                 }
-                catch (Exception ex) when (!isLast && !cancellationToken.IsCancellationRequested)
+                // 404/410 = sản phẩm không tồn tại: chiến lược dự phòng (vd Playwright – để vượt chặn) cũng chỉ nhận 404 sau ~18 giây
+                // và còn làm mất mã trạng thái → dừng ngay, ném nguyên lỗi để job giá nhận ra "không còn trên sàn"
+                catch (Exception ex) when (!isLast && !cancellationToken.IsCancellationRequested && !ScrapeErrors.IsNotFound(ex))
                 {
                     _logger.LogWarning("{Strategy} thất bại ({Msg}). Chuyển sang {Next} cho: {Path}",
                         strategy.Name, ex.Message, _strategies[i + 1].Name, path);
                 }
-                catch (Exception) when (isLast)
+                catch (Exception ex) when (isLast || ScrapeErrors.IsNotFound(ex))
                 {
-                    _logger.LogError("Tất cả chiến lược tải đều thất bại. Bỏ cuộc cho: {Path}", path);
+                    if (isLast) _logger.LogError("Tất cả chiến lược tải đều thất bại. Bỏ cuộc cho: {Path}", path);
+                    else _logger.LogWarning("{Strategy}: sàn báo không tồn tại ({Msg}), không chuyển dự phòng: {Path}", strategy.Name, ex.Message, path);
                     _metrics.RecordFailure();
+                    _metrics.Record(new ScrapeRecord
+                    {
+                        Platform = _platform, Operation = ScrapeOperations.Product, Success = false,
+                        Duration = stopwatch.Elapsed, Target = path, Error = ex.Message
+                    });
                     throw; // Giữ nguyên lỗi gốc để tầng trên xử lý như trước
                 }
             }

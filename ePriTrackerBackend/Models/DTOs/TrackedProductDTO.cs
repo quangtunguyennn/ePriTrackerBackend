@@ -20,6 +20,10 @@ namespace ePriTrackerBackend.Models.DTOs
         public DateTimeOffset? OutOfStockSince { get; set; }
         public string PlatformProductId { get; set; }
 
+        /// <summary>Sàn đã gỡ sản phẩm – hệ thống ngưng cập nhật giá (LatestPrice là giá cuối cùng ghi nhận).</summary>
+        public bool IsDelisted { get; set; }
+        public DateTimeOffset? DelistedAt { get; set; }
+
         /// <summary>Giá lúc người dùng này bắt đầu theo dõi ("Tracked Price"). Null khi lúc đó sản phẩm chưa có giá (hết hàng).</summary>
         public decimal? InitialPrice { get; set; }
 
@@ -40,6 +44,8 @@ namespace ePriTrackerBackend.Models.DTOs
             IsInStock = product.IsInStock,
             OutOfStockSince = product.OutOfStockSince,
             PlatformProductId = product.PlatformProductId,
+            IsDelisted = product.IsDelisted,
+            DelistedAt = product.DelistedAt,
             InitialPrice = item?.InitialPrice,
             TargetPrice = item?.TargetPrice
         };

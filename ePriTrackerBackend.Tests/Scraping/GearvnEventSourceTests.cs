@@ -124,6 +124,10 @@ namespace ePriTrackerBackend.Tests.Scraping
         private sealed class FakeProductPages : IPlatformScraper
         {
             public List<string> Requested { get; } = new();
+
+            /// <summary>Handle → lỗi ném ra khi đọc trang (vd 404 vì GearVN đã gỡ sản phẩm).</summary>
+            public Dictionary<string, Exception> Failures { get; } = new();
+
             public string Platform => GearvnScraper.PlatformName;
             public bool CanHandle(string productUrl) => GearvnUrlParser.IsGearvnUrl(productUrl);
 
@@ -137,6 +141,7 @@ namespace ePriTrackerBackend.Tests.Scraping
             {
                 Requested.Add(productUrl);
                 GearvnUrlParser.TryGetHandle(productUrl, out var handle);
+                if (Failures.TryGetValue(handle, out var failure)) return Task.FromException<ScrapedProduct>(failure);
                 bool inStock = handle != "man-hinh-c";
                 return Task.FromResult(new ScrapedProduct
                 {
@@ -217,6 +222,45 @@ namespace ePriTrackerBackend.Tests.Scraping
             await source.GetLiveEventsAsync();
             Assert.True(_http.Requested.Count > listRequests);
             Assert.Equal(productRequests, _products.Requested.Count);
+        }
+
+        [Fact]
+        public async Task NotFoundProduct_RememberedSixHours_AcrossPromotionsAndSyncs()
+        {
+            // Sản phẩm LG nằm trong cả 2 chương trình nhưng GearVN đã gỡ trang (404)
+            _products.Failures["man-hinh-lg-27gx704a"] = new HttpRequestException("Response status code does not indicate success: 404 (Not Found).", null, HttpStatusCode.NotFound);
+            var source = Source();
+
+            var events = await source.GetLiveEventsAsync();
+            Assert.Empty(events[0].Products);                                   // chương trình LG không còn sản phẩm hợp lệ
+            Assert.DoesNotContain(events[1].Products, p => p.Url.EndsWith("man-hinh-lg-27gx704a"));
+            Assert.Single(_products.Requested, u => u.EndsWith("man-hinh-lg-27gx704a")); // 2 chương trình, chỉ gọi 1 lần
+
+            _time.Now += TimeSpan.FromMinutes(11);                              // lượt đồng bộ sau
+            await source.GetLiveEventsAsync();
+            Assert.Single(_products.Requested, u => u.EndsWith("man-hinh-lg-27gx704a"));
+
+            _time.Now += GearvnEventSource.NotFoundLifetime;                    // hết 6 giờ → thử lại (phòng khi GearVN mở lại trang)
+            await source.GetLiveEventsAsync();
+            Assert.Equal(2, _products.Requested.Count(u => u.EndsWith("man-hinh-lg-27gx704a")));
+        }
+
+        [Fact]
+        public async Task OtherFailure_RetriedAfterThirtyMinutes()
+        {
+            _products.Failures["man-hinh-lg-27gx704a"] = new HttpRequestException("Connection reset"); // lỗi mạng, không có mã trạng thái
+            var source = Source();
+
+            await source.GetLiveEventsAsync();
+            _time.Now += TimeSpan.FromMinutes(11);
+            await source.GetLiveEventsAsync();
+            Assert.Single(_products.Requested, u => u.EndsWith("man-hinh-lg-27gx704a"));
+
+            _products.Failures.Clear();                                          // mạng ổn lại
+            _time.Now += TimeSpan.FromMinutes(20);                              // đã 31 phút từ lần lỗi
+            var events = await source.GetLiveEventsAsync();
+            Assert.Equal(2, _products.Requested.Count(u => u.EndsWith("man-hinh-lg-27gx704a")));
+            Assert.Single(events[0].Products);
         }
 
         [Fact]

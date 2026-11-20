@@ -13,18 +13,29 @@ namespace ePriTrackerBackend.Services.YouTube
 
     public class YouTubeService : IYouTubeService
     {
-        private readonly string _apiKey;
+        private static int _missingKeyLogged;
 
-        public YouTubeService(IConfiguration configuration)
+        private readonly string _apiKey;
+        private readonly ILogger<YouTubeService> _logger;
+
+        // Key lấy từ User Secrets / biến môi trường "YouTubeApiKey"; thiếu → không có video review, trang chi tiết vẫn chạy
+        public YouTubeService(IConfiguration configuration, ILogger<YouTubeService> logger = null)
         {
-            _apiKey = configuration["YouTubeApiKey"]
-                ?? throw new ArgumentNullException("YouTubeApiKey configuration is missing");
+            _apiKey = configuration?[ePriTrackerBackend.Extensions.SecretsConfiguration.YouTubeApiKey];
+            _logger = logger;
         }
 
         public async Task<List<YouTubeVideoDto>> GetReviewVideosAsync(string productName, int maxResults = 3)
         {
             if (string.IsNullOrWhiteSpace(productName))
                 return new List<YouTubeVideoDto>();
+
+            if (string.IsNullOrWhiteSpace(_apiKey))
+            {
+                if (Interlocked.Exchange(ref _missingKeyLogged, 1) == 0)
+                    _logger?.LogWarning("Chưa cấu hình YouTubeApiKey (User Secrets / biến môi trường) – tắt video review.");
+                return new List<YouTubeVideoDto>();
+            }
 
             var googleYoutubeService = new GoogleYouTubeService(new BaseClientService.Initializer()
             {

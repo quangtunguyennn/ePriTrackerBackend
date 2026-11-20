@@ -33,12 +33,14 @@ namespace ePriTrackerBackend.Services.Suggestions
         private readonly IPlatformScraperResolver _scrapers;
         private readonly ISuggestionMatcher _matcher;
         private readonly ILogger<SuggestionFinder> _logger;
+        private readonly IScraperMetrics _metrics;
 
-        public SuggestionFinder(IPlatformScraperResolver scrapers, ISuggestionMatcher matcher, ILogger<SuggestionFinder> logger)
+        public SuggestionFinder(IPlatformScraperResolver scrapers, ISuggestionMatcher matcher, ILogger<SuggestionFinder> logger, IScraperMetrics metrics = null)
         {
             _scrapers = scrapers ?? throw new ArgumentNullException(nameof(scrapers));
             _matcher = matcher ?? throw new ArgumentNullException(nameof(matcher));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _metrics = metrics ?? NullScraperMetrics.Instance;
         }
 
         public async Task<List<SuggestionProduct>> FindAsync(Product product, FetchOptions options = null, CancellationToken cancellationToken = default)
@@ -134,12 +136,31 @@ namespace ePriTrackerBackend.Services.Suggestions
             {
                 var result = await platform.SearchAsync(keyword, SearchLimitPerPlatform, options, timeoutCts.Token);
                 _logger.LogInformation("{Platform} trả {Count} ứng viên cho '{Keyword}' sau {Ms}ms", platform.Platform, result.Count, keyword, sw.ElapsedMilliseconds);
+                _metrics.Record(new ScrapeRecord
+                {
+                    Platform = platform.Platform, Operation = ScrapeOperations.Search, Success = true, Duration = sw.Elapsed, Target = keyword
+                });
                 return result;
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                throw new TimeoutException($"{platform.Platform} tìm kiếm quá {PerPlatformTimeout.TotalSeconds:0}s.");
+                var timeout = new TimeoutException($"{platform.Platform} tìm kiếm quá {PerPlatformTimeout.TotalSeconds:0}s.");
+                RecordSearchFailure(platform.Platform, keyword, sw.Elapsed, timeout);
+                throw timeout;
             }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                RecordSearchFailure(platform.Platform, keyword, sw.Elapsed, ex);
+                throw;
+            }
+        }
+
+        private void RecordSearchFailure(string platform, string keyword, TimeSpan duration, Exception ex)
+        {
+            _metrics.Record(new ScrapeRecord
+            {
+                Platform = platform, Operation = ScrapeOperations.Search, Success = false, Duration = duration, Target = keyword, Error = ex.Message
+            });
         }
 
         // "Tiki=10, HACOM=3" – đếm theo sàn suy ra từ link

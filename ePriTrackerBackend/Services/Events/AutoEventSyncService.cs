@@ -41,6 +41,8 @@ namespace ePriTrackerBackend.Services.Events
         private readonly IMemoryCache _cache;
         private readonly TimeProvider _time;
         private readonly ILogger<AutoEventSyncService> _logger;
+        private readonly IScraperMetrics _metrics;
+        private readonly IAutoEventSyncStatusStore _status;
 
         public AutoEventSyncService(
             IEnumerable<IAutoEventSource> sources,
@@ -48,8 +50,12 @@ namespace ePriTrackerBackend.Services.Events
             IUnitOfWork unitOfWork,
             IMemoryCache cache,
             ILogger<AutoEventSyncService> logger,
-            TimeProvider timeProvider = null)
+            TimeProvider timeProvider = null,
+            IScraperMetrics metrics = null,
+            IAutoEventSyncStatusStore status = null)
         {
+            _metrics = metrics ?? NullScraperMetrics.Instance;
+            _status = status ?? new AutoEventSyncStatusStore();
             _sources = sources ?? throw new ArgumentNullException(nameof(sources));
             _events = events ?? throw new ArgumentNullException(nameof(events));
             _unitOfWork = unitOfWork ?? throw new ArgumentNullException(nameof(unitOfWork));
@@ -75,18 +81,39 @@ namespace ePriTrackerBackend.Services.Events
             try
             {
                 IReadOnlyList<ScrapedEvent> liveEvents;
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
                 try
                 {
                     liveEvents = await source.GetLiveEventsAsync(cancellationToken);
+                    _metrics.Record(new ScrapeRecord
+                    {
+                        Platform = source.Platform, Operation = ScrapeOperations.Events, Success = true,
+                        Duration = stopwatch.Elapsed, Target = $"{liveEvents.Count} sự kiện"
+                    });
                 }
                 catch (Exception ex)
                 {
                     // Lỗi mạng / trang đổi giao diện → giữ nguyên DB; sự kiện cũ vẫn tự hết hạn theo EndsAt
                     _logger.LogWarning(ex, "⚠️ Không đọc được sự kiện {Platform}, giữ nguyên dữ liệu cũ.", source.Platform);
+                    _metrics.Record(new ScrapeRecord
+                    {
+                        Platform = source.Platform, Operation = ScrapeOperations.Events, Success = false,
+                        Duration = stopwatch.Elapsed, Target = "Đồng bộ sự kiện", Error = ex.Message
+                    });
+                    _status.Set(new AutoEventSyncStatus
+                    {
+                        Platform = source.Platform, RunAt = _time.GetUtcNow(), Success = false,
+                        DurationMs = stopwatch.ElapsedMilliseconds, Error = ex.Message
+                    });
                     return false;
                 }
 
-                await ApplyAsync(source.Platform, liveEvents);
+                var (published, removed) = await ApplyAsync(source.Platform, liveEvents);
+                _status.Set(new AutoEventSyncStatus
+                {
+                    Platform = source.Platform, RunAt = _time.GetUtcNow(), Success = true, DurationMs = stopwatch.ElapsedMilliseconds,
+                    EventsFound = liveEvents.Count, EventsShown = published, EventsRemoved = removed
+                });
                 return true;
             }
             finally
@@ -95,7 +122,7 @@ namespace ePriTrackerBackend.Services.Events
             }
         }
 
-        private async Task ApplyAsync(string platform, IReadOnlyList<ScrapedEvent> liveEvents)
+        private async Task<(int Published, int Removed)> ApplyAsync(string platform, IReadOnlyList<ScrapedEvent> liveEvents)
         {
             var now = _time.GetUtcNow();
             var stored = await _events.GetByPlatformAsync(platform);
@@ -144,10 +171,10 @@ namespace ePriTrackerBackend.Services.Events
                         .ToList();
                 evt.EndsAt = endsAt;
                 evt.EndsAtIsExact = scraped.EndsAt != null;
-                evt.IsPublished = true;
+                evt.IsPublished = !evt.IsHiddenByAdmin; // Admin đã ẩn → giữ ẩn qua các lượt đồng bộ
 
                 toCache.Add((evt.EventId, products.Select(p => p.ToLiveEventProductDto()).ToList(), endsAt));
-                published++;
+                if (evt.IsPublished) published++;
             }
 
             // Xoá hẳn: đã hết giờ, hoặc sự kiện có giờ chính xác (flash sale) mà sàn không còn trả về.
@@ -168,6 +195,7 @@ namespace ePriTrackerBackend.Services.Events
 
             _logger.LogInformation("✅ Đồng bộ sự kiện {Platform}: {Published} sự kiện đang hiển thị, xoá {Removed} sự kiện.",
                 platform, published, removed.Count);
+            return (published, removed.Count);
         }
 
         // Giá hợp lệ, có link; giá gốc (nếu có) không được thấp hơn giá bán

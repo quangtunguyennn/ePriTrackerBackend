@@ -26,6 +26,9 @@ builder.Services.AddDbContext<ePriTrackerContext>(options =>
 // ==========================================
 // 2. CẤU HÌNH AUTHENTICATION (JWT) & CORS
 // ==========================================
+// Khoá JWT lấy từ User Secrets (máy dev) / biến môi trường (server) – thiếu thì dừng ngay với hướng dẫn, thay vì lỗi khó hiểu lúc đăng nhập
+var jwtSigningKey = SecretsConfiguration.GetJwtSigningKey(builder.Configuration);
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(options =>
 {
     options.TokenValidationParameters = new TokenValidationParameters
@@ -36,7 +39,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
         ValidateIssuerSigningKey = true,
         ValidIssuer = builder.Configuration["JwtSettings:Issuer"],
         ValidAudience = builder.Configuration["JwtSettings:Audience"],
-        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["JwtSettings:SecretKey"]!))
+        IssuerSigningKey = new SymmetricSecurityKey(jwtSigningKey)
     };
 });
 

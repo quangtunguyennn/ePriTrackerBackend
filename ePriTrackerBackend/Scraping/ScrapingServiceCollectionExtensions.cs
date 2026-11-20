@@ -54,7 +54,8 @@ namespace ePriTrackerBackend.Scraping
                     sp.GetRequiredService<TikiPlaywrightFetchStrategy>()
                 },
                 sp.GetRequiredService<IScraperMetrics>(),
-                sp.GetRequiredService<ILogger<HybridFetcher>>()));
+                sp.GetRequiredService<ILogger<HybridFetcher>>(),
+                TikiScraper.PlatformName));
 
             // Một instance TikiScraper phục vụ cả 2 vai trò: strategy sản phẩm và nguồn sự kiện
             services.AddSingleton<TikiScraper>();
@@ -81,7 +82,8 @@ namespace ePriTrackerBackend.Scraping
                         new Dictionary<string, string> { [CellphoneSScraper.DescriptionHtmlField] = CellphoneSScraper.DescriptionXPath })
                 },
                 sp.GetRequiredService<IScraperMetrics>(),
-                sp.GetRequiredService<ILogger<HybridFetcher>>()));
+                sp.GetRequiredService<ILogger<HybridFetcher>>(),
+                CellphoneSScraper.PlatformName));
 
             // GraphQL nội bộ (tìm kiếm, flash sale, giá theo lô) – CHUNG giới hạn tốc độ với trang web CellphoneS
             services.AddPlatformHttpClient(CellphoneSScraper.PlatformName, CellphoneSApi.HttpClientName, client =>
@@ -131,7 +133,8 @@ namespace ePriTrackerBackend.Scraping
                         new Dictionary<string, string> { [HacomScraper.DescriptionHtmlField] = HacomScraper.DescriptionXPath })
                 },
                 sp.GetRequiredService<IScraperMetrics>(),
-                sp.GetRequiredService<ILogger<HybridFetcher>>()));
+                sp.GetRequiredService<ILogger<HybridFetcher>>(),
+                HacomScraper.PlatformName));
 
             services.AddSingleton<HacomScraper>();
             services.AddSingleton<IPlatformScraper>(sp => sp.GetRequiredService<HacomScraper>());
@@ -163,7 +166,8 @@ namespace ePriTrackerBackend.Scraping
             services.AddKeyedSingleton<IHybridFetcher>(GearvnScraper.PlatformName, (sp, _) => new HybridFetcher(
                 new IFetchStrategy[] { new HtmlJsonLdFetchStrategy(sp.GetRequiredService<IHttpClientFactory>(), GearvnScraper.PlatformName) },
                 sp.GetRequiredService<IScraperMetrics>(),
-                sp.GetRequiredService<ILogger<HybridFetcher>>()));
+                sp.GetRequiredService<ILogger<HybridFetcher>>(),
+                GearvnScraper.PlatformName));
 
             services.AddSingleton<GearvnScraper>();
             services.AddSingleton<IPlatformScraper>(sp => sp.GetRequiredService<GearvnScraper>());

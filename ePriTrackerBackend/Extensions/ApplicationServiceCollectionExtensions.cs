@@ -1,5 +1,6 @@
 using ePriTrackerBackend.Repositories;
 using ePriTrackerBackend.Services;
+using ePriTrackerBackend.Services.Admin;
 using ePriTrackerBackend.Services.Auth;
 using ePriTrackerBackend.Services.Events;
 using ePriTrackerBackend.Services.Notification;
@@ -24,6 +25,7 @@ namespace ePriTrackerBackend.Extensions
             services.AddScoped<ISuggestionRepository, SuggestionRepository>();
             services.AddScoped<IEventRepository, EventRepository>();
             services.AddScoped<IPriceHistoryRepository, PriceHistoryRepository>();
+            services.AddScoped<IAdminRepository, AdminRepository>(); // chỉ-đọc cho trang Admin
             return services;
         }
 
@@ -49,6 +51,7 @@ namespace ePriTrackerBackend.Extensions
 
             // Sự kiện
             services.AddScoped<IEventService, EventService>();
+            services.AddSingleton<IAutoEventSyncStatusStore, AutoEventSyncStatusStore>(); // kết quả đồng bộ gần nhất cho trang Admin
             services.AddScoped<IAutoEventSyncService, AutoEventSyncService>(); // sàn tự đăng (CellphoneS) – cũng là job "sync-auto-events-job"
 
             // Thông báo giá mục tiêu (chuông + email SMTP – cần "SmtpSettings")
@@ -58,6 +61,12 @@ namespace ePriTrackerBackend.Extensions
             // Job Hangfire (giữ nguyên tên interface – Hangfire lưu tên kiểu dưới DB)
             services.AddScoped<IPriceCrawlerWorker, PriceCrawlerWorker>(); // "adaptive-price-crawler-job" – cào theo Tier
             services.AddScoped<IEventCacheService, EventCacheService>();
+
+            // Trang Admin
+            services.AddSingleton<IJobStatusReader, HangfireJobStatusReader>();
+            services.AddScoped<IAdminMonitoringService, AdminMonitoringService>();
+            services.AddScoped<IAdminStatsService, AdminStatsService>();
+            services.AddScoped<IAdminEventService, AdminEventService>();
 
             return services;
         }

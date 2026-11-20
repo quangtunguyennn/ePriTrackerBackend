@@ -352,6 +352,7 @@ namespace ePriTrackerBackend.Scraping.Tiki
         // ==============================================================
         public async Task<JsonElement> ScrapeEventPageAsync(string eventUrl)
         {
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             var sharedPage = await GetReadyPageAsync();
             IPage eventPage = null;
 
@@ -402,12 +403,22 @@ namespace ePriTrackerBackend.Scraping.Tiki
                 int count = jsonResult.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array ? data.GetArrayLength() : 0;
                 _logger.LogInformation("[TikiBrowserService] Quét DOM xong: {Count} sản phẩm ({Url})", count, eventUrl);
                 _metrics.RecordSuccess(FetchStrategyNames.Playwright);
+                _metrics.Record(new ScrapeRecord
+                {
+                    Platform = TikiScraper.PlatformName, Operation = ScrapeOperations.Events, Success = true,
+                    Strategy = FetchStrategyNames.Playwright, Duration = stopwatch.Elapsed, Target = eventUrl
+                });
                 return jsonResult;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[TikiBrowserService] Bóc tách DOM thất bại: {Url}", eventUrl);
                 _metrics.RecordFailure();
+                _metrics.Record(new ScrapeRecord
+                {
+                    Platform = TikiScraper.PlatformName, Operation = ScrapeOperations.Events, Success = false,
+                    Duration = stopwatch.Elapsed, Target = eventUrl, Error = ex.Message
+                });
                 // Tạo JSON rỗng an toàn để hệ thống không sập
                 using var doc = JsonDocument.Parse("{ \"data\": [] }");
                 return doc.RootElement.Clone();
