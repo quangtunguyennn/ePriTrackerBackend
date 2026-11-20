@@ -3,6 +3,7 @@ using Microsoft.IdentityModel.Tokens;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using ePriTrackerBackend.Extensions;
 
 namespace ePriTrackerBackend.Services.Auth
 {
@@ -13,13 +14,16 @@ namespace ePriTrackerBackend.Services.Auth
 
     public class JwtTokenService : IJwtTokenService
     {
-        private const int TokenLifetimeMinutes = 60;
-
         private readonly IConfiguration _configuration;
+        private readonly byte[] _signingKey;
+        private readonly int _lifetimeMinutes;
 
         public JwtTokenService(IConfiguration configuration)
         {
             _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+            // Khoá lấy từ User Secrets / biến môi trường (không còn trong appsettings.json); thời hạn theo "JwtSettings:DurationInMinutes"
+            _signingKey = SecretsConfiguration.GetJwtSigningKey(configuration);
+            _lifetimeMinutes = SecretsConfiguration.GetTokenLifetimeMinutes(configuration);
         }
 
         public string CreateToken(User user, IEnumerable<string> roles)
@@ -36,14 +40,14 @@ namespace ePriTrackerBackend.Services.Auth
                 claims.Add(new Claim(ClaimTypes.Role, role));
             }
 
-            var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["JwtSettings:SecretKey"]));
+            var key = new SymmetricSecurityKey(_signingKey);
             var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
 
             var token = new JwtSecurityToken(
                 issuer: _configuration["JwtSettings:Issuer"],
                 audience: _configuration["JwtSettings:Audience"],
                 claims: claims,
-                expires: DateTime.Now.AddMinutes(TokenLifetimeMinutes),
+                expires: DateTime.UtcNow.AddMinutes(_lifetimeMinutes),
                 signingCredentials: creds
             );
 

@@ -59,6 +59,13 @@ namespace ePriTrackerBackend.Services.Notification
 
         private async Task SendAsync(string recipientEmail, string recipientName, string subject, string htmlBody, string kind)
         {
+            // Mật khẩu SMTP lấy từ User Secrets / biến môi trường "SmtpSettings__Password"; thiếu → bỏ qua gửi mail (thông báo trong DB vẫn được ghi)
+            if (string.IsNullOrWhiteSpace(_config[ePriTrackerBackend.Extensions.SecretsConfiguration.SmtpPassword]))
+            {
+                _logger.LogWarning("📧 [EMAIL SKIPPED] Chưa cấu hình SmtpSettings:Password – không gửi email {Kind} tới {Email}", kind, recipientEmail);
+                return;
+            }
+
             try
             {
                 var email = new MimeMessage();
