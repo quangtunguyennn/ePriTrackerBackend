@@ -1,4 +1,6 @@
 ﻿using ePriTrackerBackend.Extensions;
+using ePriTrackerBackend.Hubs;
+using ePriTrackerBackend.Services.Notification;
 using ePriTrackerBackend.Models.Context;
 using ePriTrackerBackend.Repositories;
 using ePriTrackerBackend.Scraping;
@@ -41,6 +43,18 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
         ValidAudience = builder.Configuration["JwtSettings:Audience"],
         IssuerSigningKey = new SymmetricSecurityKey(jwtSigningKey)
     };
+
+    // SignalR (WebSocket) không gửi được header Authorization → trình duyệt gửi JWT qua query "access_token", chỉ nhận ở đường dẫn hub
+    options.Events = new JwtBearerEvents
+    {
+        OnMessageReceived = context =>
+        {
+            var accessToken = context.Request.Query["access_token"];
+            if (!string.IsNullOrEmpty(accessToken) && context.HttpContext.Request.Path.StartsWithSegments(NotificationHub.Path))
+                context.Token = accessToken;
+            return Task.CompletedTask;
+        }
+    };
 });
 
 builder.Services.AddCors(options =>
@@ -60,6 +74,10 @@ builder.Services.AddScraping();             // Telemetry, các sàn TMĐT (Strat
 builder.Services.AddRepositories();         // Truy cập DB
 builder.Services.AddApplicationServices();  // Nghiệp vụ, thông báo + điểm vào job Hangfire
 builder.Services.AddControllers();
+
+// Realtime cho chuông thông báo: hub SignalR + bộ đẩy tín hiệu (NotificationService gọi sau khi lưu thông báo)
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<INotificationPublisher, SignalRNotificationPublisher>();
 
 // ==========================================
 // 4. CẤU HÌNH HANGFIRE
@@ -183,5 +201,6 @@ RecurringJob.AddOrUpdate<IAutoEventSyncService>(
 BackgroundJob.Enqueue<IAutoEventSyncService>(service => service.SyncAllAsync(CancellationToken.None));
 
 app.MapControllers();
+app.MapHub<NotificationHub>(NotificationHub.Path);
 
 app.Run();

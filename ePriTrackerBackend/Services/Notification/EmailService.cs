@@ -24,37 +24,43 @@ namespace ePriTrackerBackend.Services.Notification
             _logger = logger;
         }
 
+        // Email tiếng Anh (ngôn ngữ chính của hệ thống). Tên sản phẩm lấy từ sàn → mã hoá HTML trước khi chèn.
         public Task SendPriceDropEmailAsync(string recipientEmail, string recipientName, string productName, decimal newPrice, decimal targetPrice, string productLink)
-            => SendAsync(recipientEmail, recipientName, $"🔥 [ePriTracker] Cảnh báo giảm giá: {productName}", $@"
+        {
+            string name = WebUtility.HtmlEncode(productName ?? "");
+            string greeting = WebUtility.HtmlEncode(string.IsNullOrWhiteSpace(recipientName) ? "there" : recipientName);
+            string link = WebUtility.HtmlEncode(productLink ?? "");
+
+            return SendAsync(recipientEmail, recipientName, $"[ePriTracker] Price target reached: {productName}", $@"
                         <div style='font-family: Arial, sans-serif; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;'>
-                            <h2 style='color: #d9534f;'>Xin chào {recipientName},</h2>
-                            <p>Sản phẩm bạn đang theo dõi vừa giảm giá chạm mốc kỳ vọng!</p>
+                            <h2 style='color: #c2410c;'>Hi {greeting},</h2>
+                            <p>A product you're tracking just dropped to your target price.</p>
                             <hr style='border: none; border-top: 1px solid #eee;' />
-                            <p><b>Sản phẩm:</b> {productName}</p>
-                            <p><b>Giá hiện tại:</b> <span style='color: #d9534f; font-size: 18px; font-weight: bold;'>{newPrice:N0}đ</span></p>
-                            <p><b>Giá mục tiêu của bạn:</b> {targetPrice:N0}đ</p>
+                            <p><b>Product:</b> {name}</p>
+                            <p><b>Current price:</b> <span style='color: #c2410c; font-size: 18px; font-weight: bold;'>{NotificationService.FormatPrice(newPrice)}</span></p>
+                            <p><b>Your target:</b> {NotificationService.FormatPrice(targetPrice)}</p>
                             <br/>
-                            <p><a href='{productLink}' style='background-color: #0275d8; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;'>Xem Sản Phẩm Ngay</a></p>
-                        </div>", "thông báo giá");
+                            <p><a href='{link}' style='background-color: #ea580c; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;'>View product</a></p>
+                        </div>", "price alert");
+        }
 
         public Task SendProductDelistedEmailAsync(string recipientEmail, string recipientName, string productName, decimal? lastPrice, string productLink)
         {
-            // Tên sản phẩm lấy từ sàn → mã hoá HTML trước khi chèn vào mail
             string name = WebUtility.HtmlEncode(productName ?? "");
-            string greeting = WebUtility.HtmlEncode(string.IsNullOrWhiteSpace(recipientName) ? "bạn" : recipientName);
-            string price = lastPrice > 0 ? $"{lastPrice.Value:N0}đ" : "chưa có";
+            string greeting = WebUtility.HtmlEncode(string.IsNullOrWhiteSpace(recipientName) ? "there" : recipientName);
+            string price = lastPrice > 0 ? NotificationService.FormatPrice(lastPrice.Value) : "not available";
 
-            return SendAsync(recipientEmail, recipientName, $"🚫 [ePriTracker] Sản phẩm không còn trên sàn: {productName}", $@"
+            return SendAsync(recipientEmail, recipientName, $"[ePriTracker] Product no longer available: {productName}", $@"
                         <div style='font-family: Arial, sans-serif; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px;'>
-                            <h2 style='color: #6c757d;'>Xin chào {greeting},</h2>
-                            <p>Sản phẩm bạn đang theo dõi <b>đã bị gỡ khỏi sàn</b> (trang sản phẩm không còn tồn tại sau nhiều lần kiểm tra trong 24 giờ).</p>
+                            <h2 style='color: #475569;'>Hi {greeting},</h2>
+                            <p>A product you're tracking <b>was removed from the platform</b> (its page no longer exists after several checks over 24 hours).</p>
                             <hr style='border: none; border-top: 1px solid #eee;' />
-                            <p><b>Sản phẩm:</b> {name}</p>
-                            <p><b>Giá cuối cùng ghi nhận:</b> {price}</p>
-                            <p>ePriTracker đã <b>ngưng cập nhật giá</b> sản phẩm này. Sản phẩm vẫn nằm trong danh sách theo dõi của bạn cho tới khi bạn xoá.
-                               Nếu sàn đăng bán lại bằng một link mới, bạn có thể tìm sản phẩm thay thế trong trang chi tiết và theo dõi lại.</p>
-                            <p style='color: #999; font-size: 12px;'>Link cũ: {WebUtility.HtmlEncode(productLink ?? "")}</p>
-                        </div>", "thông báo sản phẩm bị gỡ");
+                            <p><b>Product:</b> {name}</p>
+                            <p><b>Last recorded price:</b> {price}</p>
+                            <p>ePriTracker has <b>stopped updating its price</b>. It stays in your list until you remove it.
+                               If the platform lists it again under a new link, you can find it among the suggestions on the product page and track it again.</p>
+                            <p style='color: #999; font-size: 12px;'>Old link: {WebUtility.HtmlEncode(productLink ?? "")}</p>
+                        </div>", "delisted product");
         }
 
         private async Task SendAsync(string recipientEmail, string recipientName, string subject, string htmlBody, string kind)

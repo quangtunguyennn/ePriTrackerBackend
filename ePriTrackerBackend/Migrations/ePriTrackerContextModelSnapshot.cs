@@ -143,6 +143,9 @@ namespace ePriTrackerBackend.Migrations
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<string>("Data")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<bool>("IsRead")
                         .HasColumnType("bit");
 
@@ -153,6 +156,10 @@ namespace ePriTrackerBackend.Migrations
                         .IsRequired()
                         .HasMaxLength(255)
                         .HasColumnType("nvarchar(255)");
+
+                    b.Property<string>("Type")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
 
                     b.Property<Guid>("UserId")
                         .HasColumnType("uniqueidentifier");

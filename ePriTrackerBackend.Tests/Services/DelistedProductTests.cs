@@ -23,6 +23,7 @@ namespace ePriTrackerBackend.Tests.Services
         {
             public List<Guid> Delisted { get; } = new();
             public Task ProcessPriceDropNotificationsAsync(Product product, decimal newPrice) => Task.CompletedTask;
+            public Task PublishPendingAsync() => Task.CompletedTask;
             public Task ProcessDelistedNotificationsAsync(Product product)
             {
                 Delisted.Add(product.ProductId);

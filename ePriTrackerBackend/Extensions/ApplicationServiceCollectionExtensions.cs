@@ -26,6 +26,7 @@ namespace ePriTrackerBackend.Extensions
             services.AddScoped<IEventRepository, EventRepository>();
             services.AddScoped<IPriceHistoryRepository, PriceHistoryRepository>();
             services.AddScoped<IAdminRepository, AdminRepository>(); // chỉ-đọc cho trang Admin
+            services.AddScoped<INotificationRepository, NotificationRepository>();
             return services;
         }
 
@@ -56,6 +57,7 @@ namespace ePriTrackerBackend.Extensions
 
             // Thông báo giá mục tiêu (chuông + email SMTP – cần "SmtpSettings")
             services.AddScoped<INotificationService, NotificationService>();
+            services.AddScoped<INotificationInboxService, NotificationInboxService>(); // chuông thông báo của người dùng
             services.AddTransient<IEmailService, EmailService>();
 
             // Job Hangfire (giữ nguyên tên interface – Hangfire lưu tên kiểu dưới DB)
