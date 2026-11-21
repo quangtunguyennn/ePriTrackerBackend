@@ -29,6 +29,13 @@ namespace ePriTrackerBackend.Tests.Services
                 return Task.CompletedTask;
             }
 
+            public int Publishes { get; private set; }
+            public Task PublishPendingAsync()
+            {
+                Publishes++;
+                return Task.CompletedTask;
+            }
+
             public List<Guid> Delisted { get; } = new();
             public Task ProcessDelistedNotificationsAsync(Product product)
             {

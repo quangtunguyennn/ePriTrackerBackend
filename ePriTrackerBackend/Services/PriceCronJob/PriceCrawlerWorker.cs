@@ -168,6 +168,8 @@ namespace ePriTrackerBackend.Services.PriceCronJob
 
                 // Luôn lưu: dù giá không đổi thì lịch cào (NextCrawlAt) cũng đã đổi
                 await _unitOfWork.SaveChangesAsync();
+                // Thông báo đã nằm trong DB → báo realtime để chuông trên trình duyệt cập nhật ngay
+                await _notifications.PublishPendingAsync();
 
                 // Sản phẩm thêm lúc hết hàng vừa có giá lần đầu → đó là giá ban đầu của những ai đang theo dõi
                 foreach (var (productId, price) in _firstPrices)

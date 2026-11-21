@@ -1,4 +1,6 @@
-﻿using ePriTrackerBackend.Models.Context;
+﻿using System.Globalization;
+using System.Text.Json;
+using ePriTrackerBackend.Models.Context;
 using ePriTrackerBackend.Models.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -6,27 +8,48 @@ namespace ePriTrackerBackend.Services.Notification
 {
     public interface INotificationService
     {
-        /// <summary>Thêm thông báo vào DbContext dùng chung (scoped) – bên gọi lưu bằng IUnitOfWork.</summary>
+        /// <summary>Thêm thông báo vào DbContext dùng chung (scoped) – bên gọi lưu bằng IUnitOfWork rồi gọi <see cref="PublishPendingAsync"/>.</summary>
         Task ProcessPriceDropNotificationsAsync(Product product, decimal newPrice);
 
         /// <summary>
         /// Sản phẩm vừa bị đánh dấu "không còn trên sàn": mỗi người đang theo dõi nhận 1 thông báo + 1 email.
-        /// Thêm vào DbContext dùng chung – bên gọi lưu bằng IUnitOfWork.
+        /// Thêm vào DbContext dùng chung – bên gọi lưu bằng IUnitOfWork rồi gọi <see cref="PublishPendingAsync"/>.
         /// </summary>
         Task ProcessDelistedNotificationsAsync(Product product);
+
+        /// <summary>
+        /// Báo realtime (SignalR) cho những người vừa có thông báo mới. Gọi SAU KHI đã lưu DB, để trình duyệt tải lại thấy ngay thông báo.
+        /// </summary>
+        Task PublishPendingAsync();
     }
 
+    /// <summary>
+    /// Thông báo lưu DỮ LIỆU (Type + Data JSON) để giao diện tự dựng câu theo ngôn ngữ người dùng chọn;
+    /// Title/Content là câu tiếng Anh dự phòng (FE gặp loại lạ, và cho các bản ghi cũ).
+    /// </summary>
     public class NotificationService : INotificationService
     {
+        private static readonly CultureInfo English = CultureInfo.GetCultureInfo("en-US");
+        // Giữ nguyên chữ có dấu trong JSON (dễ đọc khi xem DB); FE đọc bằng JSON.parse, không chèn thẳng vào HTML
+        private static readonly JsonSerializerOptions JsonOptions = new()
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        };
+
         private readonly ePriTrackerContext _dbContext;
         private readonly IEmailService _emailService;
         private readonly ILogger<NotificationService> _logger;
+        private readonly INotificationPublisher _publisher;
+        private readonly HashSet<Guid> _pendingUsers = new();
 
-        public NotificationService(ePriTrackerContext dbContext, IEmailService emailService, ILogger<NotificationService> logger)
+        public NotificationService(ePriTrackerContext dbContext, IEmailService emailService, ILogger<NotificationService> logger,
+            INotificationPublisher publisher = null)
         {
             _dbContext = dbContext;
             _emailService = emailService;
             _logger = logger;
+            _publisher = publisher ?? NullNotificationPublisher.Instance;
         }
 
         public async Task ProcessPriceDropNotificationsAsync(Product product, decimal newPrice)
@@ -56,20 +79,21 @@ namespace ePriTrackerBackend.Services.Notification
                     continue;
                 }
 
-                // 2. Tạo bản ghi Notification (In-App Bell)
-                string formattedPrice = newPrice.ToString("N0") + " đ";
-                string formattedTarget = item.TargetPrice.Value.ToString("N0") + " đ";
-
+                // 2. Tạo bản ghi Notification (In-App Bell): dữ liệu + câu tiếng Anh dự phòng
+                decimal target = item.TargetPrice.Value;
                 notificationsToAdd.Add(new Models.Entities.Notification
                 {
                     NotificationId = Guid.NewGuid(),
                     UserId = item.UserId,
                     ProductId = product.ProductId,
-                    Title = "🔥 Giá sản phẩm đã giảm!",
-                    Content = $"Sản phẩm '{product.ProductName}' đã giảm xuống {formattedPrice} (mục tiêu của bạn là {formattedTarget}).",
+                    Type = NotificationTypes.TargetReached,
+                    Data = Serialize(new { productName = product.ProductName, price = newPrice, targetPrice = target }),
+                    Title = "Price target reached",
+                    Content = $"{product.ProductName} dropped to {FormatPrice(newPrice)} (your target: {FormatPrice(target)}).",
                     IsRead = false,
                     CreatedAt = now
                 });
+                _pendingUsers.Add(item.UserId);
 
                 // 3. Cập nhật cờ anti-spam trên bảng Item
                 item.IsTargetNotified = true;
@@ -83,10 +107,10 @@ namespace ePriTrackerBackend.Services.Notification
                     // Chạy gửi mail không chặn tiến trình chính (Fire-and-forget hoặc Task.Run)
                     _ = _emailService.SendPriceDropEmailAsync(
                         recipientEmail: item.User.Email,
-                        recipientName: item.User.FirstName + item.User.LastName, // hoặc item.User.FullName
+                        recipientName: $"{item.User.FirstName} {item.User.LastName}".Trim(),
                         productName: product.ProductName,
                         newPrice: newPrice,
-                        targetPrice: item.TargetPrice.Value,
+                        targetPrice: target,
                         productLink: product.ProductLink
                     );
                 }
@@ -114,7 +138,8 @@ namespace ePriTrackerBackend.Services.Notification
             if (users.Count == 0) return;
 
             var now = DateTimeOffset.UtcNow;
-            string lastPrice = product.LatestPrice > 0 ? product.LatestPrice.Value.ToString("N0") + " đ" : "chưa có";
+            decimal? lastPrice = product.LatestPrice > 0 ? product.LatestPrice : null;
+            string lastPriceText = lastPrice.HasValue ? FormatPrice(lastPrice.Value) : "not available";
 
             foreach (var user in users)
             {
@@ -123,11 +148,14 @@ namespace ePriTrackerBackend.Services.Notification
                     NotificationId = Guid.NewGuid(),
                     UserId = user.UserId,
                     ProductId = product.ProductId,
-                    Title = "🚫 Sản phẩm không còn trên sàn",
-                    Content = $"Sản phẩm '{product.ProductName}' đã bị gỡ khỏi sàn (giá cuối cùng: {lastPrice}). Hệ thống đã ngưng theo dõi giá – bạn có thể xoá khỏi danh sách hoặc tìm sản phẩm thay thế.",
+                    Type = NotificationTypes.Delisted,
+                    Data = Serialize(new { productName = product.ProductName, lastPrice }),
+                    Title = "Product no longer available",
+                    Content = $"{product.ProductName} was removed from the platform (last price: {lastPriceText}). Price tracking has stopped – you can remove it from your list or find an alternative.",
                     IsRead = false,
                     CreatedAt = now
                 });
+                _pendingUsers.Add(user.UserId);
 
                 if (!string.IsNullOrEmpty(user.Email))
                 {
@@ -143,5 +171,27 @@ namespace ePriTrackerBackend.Services.Notification
 
             _logger.LogInformation("Đã tạo {Count} thông báo 'không còn trên sàn' cho Sản phẩm ID {ProductId}", users.Count, product.ProductId);
         }
+
+        public async Task PublishPendingAsync()
+        {
+            if (_pendingUsers.Count == 0) return;
+
+            var users = _pendingUsers.ToList();
+            _pendingUsers.Clear();
+            try
+            {
+                await _publisher.NotifyChangedAsync(users);
+            }
+            catch (Exception ex)
+            {
+                // Realtime chỉ là tiện ích: lỗi đẩy không được làm hỏng job – trình duyệt vẫn thấy khi tải lại
+                _logger.LogWarning(ex, "Không đẩy được thông báo realtime tới {Count} người dùng.", users.Count);
+            }
+        }
+
+        /// <summary>"1,500,000 ₫" – định dạng tiếng Anh cho câu dự phòng.</summary>
+        public static string FormatPrice(decimal price) => price.ToString("N0", English) + " ₫";
+
+        private static string Serialize(object data) => JsonSerializer.Serialize(data, JsonOptions);
     }
 }

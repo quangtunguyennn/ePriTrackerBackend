@@ -79,6 +79,92 @@ namespace ePriTrackerBackend.Tests
             await service.SendProductDelistedEmailAsync("u@test.vn", "U", "SP", 1000, "https://x");
         }
 
+        private sealed class Env : Microsoft.Extensions.Hosting.IHostEnvironment
+        {
+            public string EnvironmentName { get; set; } = "Development";
+            public string ApplicationName { get; set; } = "ePriTrackerBackend";
+            public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
+            public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider { get; set; } = new Microsoft.Extensions.FileProviders.NullFileProvider();
+        }
+
+        private static string TempSecretsPath() => Path.Combine(Path.GetTempPath(), "epri-secrets-" + Guid.NewGuid().ToString("N"), "secrets.json");
+
+        [Fact]
+        public void DevWithoutJwtKey_GeneratesAndSaves_KeepingOtherSecrets()
+        {
+            string path = TempSecretsPath();
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, "﻿{ \"YouTubeApiKey\": \"yt\", \"JwtSettings\": { \"SecretKey\": \"cu\" } }");
+            try
+            {
+                var config = new ConfigurationManager();
+                config.AddInMemoryCollection(new Dictionary<string, string?> { ["JwtSettings:SecretKey"] = "" });
+
+                Assert.True(SecretsConfiguration.EnsureDevelopmentJwtKey(config, new Env(), path));
+
+                byte[] key = SecretsConfiguration.GetJwtSigningKey(config); // dùng được ngay, không ném lỗi
+                var saved = JsonDocument.Parse(File.ReadAllText(path)).RootElement;
+                Assert.Equal(System.Text.Encoding.UTF8.GetString(key), saved.GetProperty("JwtSettings:SecretKey").GetString());
+                Assert.Equal("yt", saved.GetProperty("YouTubeApiKey").GetString());
+                Assert.False(saved.GetProperty("JwtSettings").TryGetProperty("SecretKey", out _)); // khoá cũ dạng lồng nhau bị bỏ
+            }
+            finally { Directory.Delete(Path.GetDirectoryName(path)!, true); }
+        }
+
+        [Fact]
+        public void DevWithoutSecretsFile_CreatesIt()
+        {
+            string path = TempSecretsPath();
+            try
+            {
+                var config = new ConfigurationManager();
+                Assert.True(SecretsConfiguration.EnsureDevelopmentJwtKey(config, new Env(), path));
+                Assert.True(File.Exists(path));
+                Assert.NotEmpty(SecretsConfiguration.GetJwtSigningKey(config));
+            }
+            finally { if (Directory.Exists(Path.GetDirectoryName(path)!)) Directory.Delete(Path.GetDirectoryName(path)!, true); }
+        }
+
+        [Fact]
+        public void ValidKeyAlready_NothingChanges()
+        {
+            string path = TempSecretsPath();
+            var config = new ConfigurationManager();
+            config.AddInMemoryCollection(new Dictionary<string, string?> { ["JwtSettings:SecretKey"] = ValidKey });
+
+            Assert.False(SecretsConfiguration.EnsureDevelopmentJwtKey(config, new Env(), path));
+            Assert.Equal(ValidKey, config["JwtSettings:SecretKey"]);
+            Assert.False(File.Exists(path));
+        }
+
+        [Fact]
+        public void Production_NeverGenerates()
+        {
+            // Server phải đặt khoá thật bằng biến môi trường – không tự sinh
+            string path = TempSecretsPath();
+            var config = new ConfigurationManager();
+
+            Assert.False(SecretsConfiguration.EnsureDevelopmentJwtKey(config, new Env { EnvironmentName = "Production" }, path));
+            Assert.Throws<InvalidOperationException>(() => SecretsConfiguration.GetJwtSigningKey(config));
+            Assert.False(File.Exists(path));
+        }
+
+        [Fact]
+        public void BrokenSecretsFile_NotOverwritten_TemporaryKeyUsed()
+        {
+            string path = TempSecretsPath();
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, "{ hỏng");
+            try
+            {
+                var config = new ConfigurationManager();
+                Assert.True(SecretsConfiguration.EnsureDevelopmentJwtKey(config, new Env(), path));
+                Assert.NotEmpty(SecretsConfiguration.GetJwtSigningKey(config));
+                Assert.Equal("{ hỏng", File.ReadAllText(path));
+            }
+            finally { Directory.Delete(Path.GetDirectoryName(path)!, true); }
+        }
+
         [Fact]
         public void CommittedAppSettings_ContainNoSecrets()
         {
