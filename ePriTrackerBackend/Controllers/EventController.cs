@@ -91,19 +91,21 @@ namespace ePriTrackerBackend.Controllers
         // =======================================================
 
         [HttpGet("getPublishedEvents")]
-        [Authorize(Roles = "User, Admin")] // Yêu cầu đăng nhập, cả User và Admin đều xem được
+        [AllowAnonymous] // Khách xem được sự kiện; theo dõi (trackDeal) mới cần đăng nhập
         public async Task<IActionResult> GetPublishedEvents()
         {
             return Ok(await _eventService.GetPublishedAsync());
         }
 
         [HttpGet("getLiveEventProducts/{eventId}")]
-        [Authorize(Roles = "User, Admin")]
+        [AllowAnonymous]
         public async Task<IActionResult> GetLiveEventProducts(Guid eventId)
         {
             try
             {
-                var result = await _eventService.GetLiveProductsAsync(eventId);
+                // Khách chỉ đọc cache (không kích hoạt cào sàn); người đã đăng nhập giữ hành vi cũ
+                bool isSignedIn = User.Identity?.IsAuthenticated == true;
+                var result = await _eventService.GetLiveProductsAsync(eventId, allowScrape: isSignedIn);
 
                 return result.Status switch
                 {

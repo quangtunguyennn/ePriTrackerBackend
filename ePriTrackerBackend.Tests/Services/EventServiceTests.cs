@@ -188,6 +188,38 @@ namespace ePriTrackerBackend.Tests.Services
         }
 
         [Fact]
+        public async Task Guest_CacheMiss_StillLoading_NeverScrapesOrSyncs()
+        {
+            // Khách chưa đăng nhập: ai cũng gọi được → không được kích hoạt cào sàn, chờ job nạp cache
+            var tiki = _db.AddEvent("Sale", "https://tiki.vn/khuyen-mai/sale");
+            var cps = _db.AddEvent("Flash sale", "https://cellphones.com.vn/#flash", platform: "CellphoneS", endsAt: DateTimeOffset.UtcNow.AddHours(1));
+            _scraper.ProductsByEventUrl["https://tiki.vn/khuyen-mai/sale"] = new() { new ScrapedProduct { ExternalId = "1", Price = 1000 } };
+
+            Assert.Equal(LiveProductsStatus.StillLoading, (await _service.GetLiveProductsAsync(tiki.EventId, allowScrape: false)).Status);
+            Assert.Equal(LiveProductsStatus.StillLoading, (await _service.GetLiveProductsAsync(cps.EventId, allowScrape: false)).Status);
+            Assert.Equal(LiveProductsStatus.EventNotFound, (await _service.GetLiveProductsAsync(Guid.NewGuid(), allowScrape: false)).Status);
+
+            Assert.Equal(0, _scraper.ProductCalls);
+            Assert.Empty(_autoSync.SyncedPlatforms);
+        }
+
+        [Fact]
+        public async Task Guest_ReadsCachedProducts_AndKnownEmpty()
+        {
+            var cached = _db.AddEvent("Co hang", "https://tiki.vn/khuyen-mai/co");
+            var empty = _db.AddEvent("Rong", "https://tiki.vn/khuyen-mai/rong");
+            _scraper.ProductsByEventUrl["https://tiki.vn/khuyen-mai/co"] = new() { new ScrapedProduct { ExternalId = "1", Name = "Sữa", Price = 1000 } };
+            await _service.GetLiveProductsAsync(cached.EventId); // người đã đăng nhập mở trước → vào cache
+            await _service.GetLiveProductsAsync(empty.EventId);  // cào ra rỗng → nhớ 10 phút
+
+            var guestCached = await _service.GetLiveProductsAsync(cached.EventId, allowScrape: false);
+            Assert.Equal(LiveProductsStatus.Ok, guestCached.Status);
+            Assert.Equal("Sữa", Assert.Single(guestCached.Products).ProductName);
+            Assert.Equal(LiveProductsStatus.NoProducts, (await _service.GetLiveProductsAsync(empty.EventId, allowScrape: false)).Status);
+            Assert.Equal(2, _scraper.ProductCalls); // khách không cào thêm
+        }
+
+        [Fact]
         public async Task RefreshCache_ProductsAppearLater_ClearsEmptyMark()
         {
             // Sự kiện chưa mở bán (vd "link sản phẩm có vào ngày 11.11") → job 30 phút cào lại; khi có sản phẩm thì hiện ngay

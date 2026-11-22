@@ -52,8 +52,9 @@ namespace ePriTrackerBackend.Services.Events
         /// <summary>
         /// Sản phẩm live của sự kiện: ưu tiên cache, chưa có thì cào ngay rồi cache. Người dùng chờ tối đa <see cref="EventService.UserWaitLimit"/>;
         /// sự kiện vừa cào ra rỗng được nhớ 10 phút (trả NoProducts ngay thay vì cào lại mỗi lần mở).
+        /// <paramref name="allowScrape"/> = false (khách chưa đăng nhập): chỉ đọc cache, không bao giờ gọi sàn – cache trống → StillLoading.
         /// </summary>
-        Task<LiveProductsResult> GetLiveProductsAsync(Guid eventId);
+        Task<LiveProductsResult> GetLiveProductsAsync(Guid eventId, bool allowScrape = true);
 
         /// <summary>
         /// Admin vừa đăng: cào ngay để biết số sản phẩm (và làm nóng cache). Null = chưa xong trong thời gian chờ (vẫn chạy tiếp).
@@ -242,7 +243,7 @@ namespace ePriTrackerBackend.Services.Events
                 .ToList();
         }
 
-        public async Task<LiveProductsResult> GetLiveProductsAsync(Guid eventId)
+        public async Task<LiveProductsResult> GetLiveProductsAsync(Guid eventId, bool allowScrape = true)
         {
             // BƯỚC 1: Cache do job Hangfire cào sẵn → trả về ngay
             if (TryGetCachedProducts(eventId, out var cachedProducts))
@@ -253,6 +254,14 @@ namespace ePriTrackerBackend.Services.Events
             // BƯỚC 2: Cache rỗng hoặc job chưa kịp chạy → cào ngay
             var evt = await _events.FindByIdAsync(eventId);
             if (evt == null) return new LiveProductsResult { Status = LiveProductsStatus.EventNotFound };
+
+            // Khách chưa đăng nhập: không kích hoạt cào (ai cũng gọi được API này) – chờ job nạp cache
+            if (!allowScrape)
+            {
+                return _cache.TryGetValue(EmptyLiveProductsCacheKey(eventId), out _)
+                    ? new LiveProductsResult { Status = LiveProductsStatus.NoProducts }
+                    : new LiveProductsResult { Status = LiveProductsStatus.StillLoading };
+            }
 
             if (evt.Platform != AdminPlatform)
             {
