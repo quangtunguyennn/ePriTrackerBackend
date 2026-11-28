@@ -17,6 +17,13 @@ namespace ePriTrackerBackend.Scraping.Hacom
     {
         public const string PlatformName = "HACOM";
 
+        /// <summary>
+        /// User-Agent tự xưng đúng danh tính khi tải trang sản phẩm (không giả trình duyệt). 28/11/2026: Cloudflare trả 403 cho
+        /// request của app gửi UA "Chrome 120" (UA nói Chrome nhưng kết nối không phải Chrome), trong khi request thường vẫn được 200.
+        /// Nếu UA thật vẫn bị 403 → HACOM không cho phép, PlatformBlockTracker tự tạm dừng, không lách.
+        /// </summary>
+        public const string HonestUserAgent = "ePriTracker/1.0 (student price-tracking project; +https://github.com/quangtunguyennn/ePriTracker)";
+
         /// <summary>Thuộc tính HtmlJsonLdFetchStrategy gắn thêm vào JSON: HTML mô tả đầy đủ (JSON-LD chỉ có 1 câu SEO).</summary>
         public const string DescriptionHtmlField = "x-descriptionHtml";
 
