@@ -56,6 +56,7 @@ namespace ePriTrackerBackend.Services.PriceCronJob
         private readonly INotificationService _notifications;
         private readonly ILogger<PriceCrawlerWorker> _logger;
         private readonly IScraperMetrics _metrics;
+        private readonly IPlatformBlockTracker _blocks;
 
         public PriceCrawlerWorker(
             IProductRepository products,
@@ -65,9 +66,11 @@ namespace ePriTrackerBackend.Services.PriceCronJob
             IPlatformScraperResolver scrapers,
             INotificationService notifications,
             ILogger<PriceCrawlerWorker> logger,
-            IScraperMetrics metrics = null)
+            IScraperMetrics metrics = null,
+            IPlatformBlockTracker blockTracker = null)
         {
             _metrics = metrics ?? NullScraperMetrics.Instance;
+            _blocks = blockTracker ?? new PlatformBlockTracker(); // DI truyền singleton – trạng thái chặn giữ qua các lượt job
             _products = products ?? throw new ArgumentNullException(nameof(products));
             _priceHistory = priceHistory ?? throw new ArgumentNullException(nameof(priceHistory));
             _trackedItems = trackedItems ?? throw new ArgumentNullException(nameof(trackedItems));
@@ -94,13 +97,20 @@ namespace ePriTrackerBackend.Services.PriceCronJob
             // Sản phẩm không có trong kết quả lô → cào lẻ (JSON-LD / API Tiki) bên dưới.
             var batchResults = await FetchBatchPricesAsync(products, cancellationToken);
 
-            int priceChanges = 0, priceDrops = 0, outOfStock = 0, failed = 0, notFound = 0, delisted = 0;
+            int priceChanges = 0, priceDrops = 0, outOfStock = 0, failed = 0, notFound = 0, delisted = 0, paused = 0;
             var chunks = products.Chunk(FetchChunkSize).ToList();
 
             for (int c = 0; c < chunks.Count; c++)
             {
                 var chunk = chunks[c];
-                var toFetch = chunk.Where(p => !batchResults.ContainsKey(p.ProductId)).ToList();
+                // Sàn đang tạm dừng vì bị chặn (403/429 liên tục) → không gửi request, hẹn lại sau đợt tạm dừng
+                var pausedUntil = new Dictionary<Guid, DateTimeOffset>();
+                foreach (var product in chunk.Where(p => !batchResults.ContainsKey(p.ProductId)))
+                {
+                    if (_blocks.IsPaused(PlatformOf(product.ProductLink), out var until)) pausedUntil[product.ProductId] = until;
+                }
+
+                var toFetch = chunk.Where(p => !batchResults.ContainsKey(p.ProductId) && !pausedUntil.ContainsKey(p.ProductId)).ToList();
                 var fetched = (await Task.WhenAll(toFetch.Select(async product => (product.ProductId, Result: await FetchCurrentAsync(product.ProductLink, cancellationToken)))))
                     .ToDictionary(x => x.ProductId, x => x.Result);
 
@@ -109,8 +119,15 @@ namespace ePriTrackerBackend.Services.PriceCronJob
 
                 foreach (var product in chunk)
                 {
+                    if (pausedUntil.TryGetValue(product.ProductId, out var resumeAt))
+                    {
+                        product.NextCrawlAt = ToVietnamTime(resumeAt); // giữ nguyên giá; không tính là lỗi hay "không còn trên sàn"
+                        paused++;
+                        continue;
+                    }
+
                     ScrapedProduct scraped;
-                    bool pageNotFound = false;
+                    bool pageNotFound = false, blocked = false;
                     if (batchResults.TryGetValue(product.ProductId, out var batch))
                     {
                         scraped = batch.Product;
@@ -119,7 +136,7 @@ namespace ePriTrackerBackend.Services.PriceCronJob
                     }
                     else
                     {
-                        (scraped, pageNotFound) = fetched.GetValueOrDefault(product.ProductId);
+                        (scraped, pageNotFound, blocked) = fetched.GetValueOrDefault(product.ProductId);
                     }
 
                     // Sàn báo trang không còn (404/410) → đếm thêm một lần kiểm tra, giữ nguyên giá
@@ -133,7 +150,10 @@ namespace ePriTrackerBackend.Services.PriceCronJob
                     // Lỗi mạng / bị chặn / sàn chưa hỗ trợ → giữ nguyên giá, không kết luận là hết hàng; hẹn lại để khỏi chiếm chỗ mỗi phút
                     if (scraped == null)
                     {
-                        product.NextCrawlAt = now.Add(RetryAfterError);
+                        // Bị chặn và sàn vừa bị tạm dừng → hẹn đúng lúc hết tạm dừng thay vì 30 phút
+                        product.NextCrawlAt = blocked && _blocks.IsPaused(PlatformOf(product.ProductLink), out var blockedUntil)
+                            ? ToVietnamTime(blockedUntil)
+                            : now.Add(RetryAfterError);
                         failed++;
                         continue;
                     }
@@ -181,8 +201,8 @@ namespace ePriTrackerBackend.Services.PriceCronJob
             }
 
             _logger.LogInformation(
-                "✅ [CRAWLER FINISHED] {Total} sản phẩm ({Batched} lấy theo lô) trong {Seconds:F1}s: {Changed} đổi giá, {Drops} giảm giá, {OutOfStock} hết hàng, {Failed} lỗi, {NotFound} không còn trên sàn ({Delisted} vừa đánh dấu).",
-                products.Count, batchResults.Count, (GetNowVn() - startedAt).TotalSeconds, priceChanges, priceDrops, outOfStock, failed, notFound, delisted);
+                "✅ [CRAWLER FINISHED] {Total} sản phẩm ({Batched} lấy theo lô) trong {Seconds:F1}s: {Changed} đổi giá, {Drops} giảm giá, {OutOfStock} hết hàng, {Failed} lỗi, {NotFound} không còn trên sàn ({Delisted} vừa đánh dấu), {Paused} hoãn do sàn đang chặn.",
+                products.Count, batchResults.Count, (GetNowVn() - startedAt).TotalSeconds, priceChanges, priceDrops, outOfStock, failed, notFound, delisted, paused);
         }
 
         /// <summary>
@@ -278,6 +298,7 @@ namespace ePriTrackerBackend.Services.PriceCronJob
             foreach (var group in byPlatform)
             {
                 var scraper = group.Key;
+                if (_blocks.IsPaused(scraper.Platform, out _)) continue; // sàn đang chặn → để vòng cào lẻ hoãn các sản phẩm này
                 var requests = new List<BatchPriceRequest>();
                 var productsByUrl = new Dictionary<string, List<Product>>(StringComparer.OrdinalIgnoreCase);
 
@@ -303,6 +324,7 @@ namespace ePriTrackerBackend.Services.PriceCronJob
                         foreach (var product in list) results[product.ProductId] = price;
                     }
 
+                    _blocks.RecordSuccess(scraper.Platform);
                     _logger.LogInformation("📦 {Platform}: {Got}/{Total} sản phẩm lấy giá theo lô.", scraper.Platform, prices.Count, requests.Count);
                     _metrics.Record(new ScrapeRecord
                     {
@@ -311,6 +333,7 @@ namespace ePriTrackerBackend.Services.PriceCronJob
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
                 {
+                    if (ScrapeErrors.IsBlocked(ex)) RegisterBlocked(scraper.Platform, ex);
                     _logger.LogWarning(ex, "⚠️ Lấy giá theo lô trên {Platform} lỗi – chuyển sang cào từng sản phẩm.", scraper.Platform);
                     _metrics.Record(new ScrapeRecord
                     {
@@ -382,28 +405,49 @@ namespace ePriTrackerBackend.Services.PriceCronJob
 
         /// <summary>
         /// Chọn đúng sàn theo link rồi lấy dữ liệu hiện tại. Link không thuộc sàn nào / không có ID / lỗi mạng → Product null (bỏ qua);
-        /// sàn trả 404/410 → NotFound = true (sản phẩm có thể đã bị gỡ).
+        /// sàn trả 404/410 → NotFound = true (sản phẩm có thể đã bị gỡ); 403/429 → Blocked = true (ghi vào bộ theo dõi chặn theo sàn).
         /// </summary>
-        private async Task<(ScrapedProduct Product, bool NotFound)> FetchCurrentAsync(string productUrl, CancellationToken cancellationToken)
+        private async Task<(ScrapedProduct Product, bool NotFound, bool Blocked)> FetchCurrentAsync(string productUrl, CancellationToken cancellationToken)
         {
             if (!_scrapers.TryResolve(productUrl, out var scraper) || !scraper.TryNormalizeProductUrl(productUrl, out _))
             {
                 _logger.LogWarning("⚠️ Sàn chưa hỗ trợ hoặc link không hợp lệ: {Url}", productUrl);
-                return (null, false);
+                return (null, false, false);
             }
 
             try
             {
                 // Bên trong scraper là Dual-Layer (tất cả chiến lược thất bại → ném lỗi → catch bên dưới trả null)
-                return (await scraper.GetProductAsync(productUrl, cancellationToken), false);
+                var product = await scraper.GetProductAsync(productUrl, cancellationToken);
+                _blocks.RecordSuccess(scraper.Platform);
+                return (product, false, false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
-                bool notFound = ScrapeErrors.IsNotFound(ex);
-                if (!notFound)
-                    _logger.LogWarning("⚠️ Không thể lấy dữ liệu từ {Platform} cho link {Url}: {Message}", scraper.Platform, productUrl, ex.Message);
-                return (null, notFound);
+                if (ScrapeErrors.IsNotFound(ex))
+                {
+                    _blocks.RecordSuccess(scraper.Platform); // sàn vẫn trả lời bình thường (chỉ là trang không còn)
+                    return (null, true, false);
+                }
+
+                bool blocked = ScrapeErrors.IsBlocked(ex);
+                if (blocked) RegisterBlocked(scraper.Platform, ex);
+                _logger.LogWarning("⚠️ Không thể lấy dữ liệu từ {Platform} cho link {Url}: {Message}", scraper.Platform, productUrl, ex.Message);
+                return (null, false, blocked);
             }
         }
+
+        private void RegisterBlocked(string platform, Exception ex)
+        {
+            if (_blocks.RecordBlocked(platform, ex.Message) && _blocks.IsPaused(platform, out var until))
+            {
+                _logger.LogWarning("⛔ {Platform} chặn request liên tục (403/429) – tạm dừng cào sàn này tới {Until:HH:mm dd/MM} (giờ VN).",
+                    platform, ToVietnamTime(until));
+            }
+        }
+
+        private string PlatformOf(string productUrl) => _scrapers.TryResolve(productUrl, out var scraper) ? scraper.Platform : null;
+
+        private static DateTimeOffset ToVietnamTime(DateTimeOffset value) => TimeZoneInfo.ConvertTime(value, VietnamTz);
     }
 }

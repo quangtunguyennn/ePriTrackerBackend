@@ -17,6 +17,9 @@ namespace ePriTrackerBackend.Tests.Helpers
         /// <summary>Link (đã chuẩn hoá) mà sàn trả 404 – sản phẩm đã bị gỡ.</summary>
         public HashSet<string> NotFoundUrls { get; } = new();
 
+        /// <summary>true: mọi trang sản phẩm trả 403 (sàn chặn request tự động).</summary>
+        public bool BlockAll { get; set; }
+
         public static string Normalized(string id) => $"https://fake.vn/product-p{id}.html";
 
         public string Platform => "Fake";
@@ -34,6 +37,8 @@ namespace ePriTrackerBackend.Tests.Helpers
         {
             RequestedUrls.Add(productUrl);
             TryNormalizeProductUrl(productUrl, out var normalized);
+            if (BlockAll)
+                return Task.FromException<ScrapedProduct>(new HttpRequestException("Response status code does not indicate success: 403 (Forbidden).", null, System.Net.HttpStatusCode.Forbidden));
             if (NotFoundUrls.Contains(normalized ?? ""))
                 return Task.FromException<ScrapedProduct>(new HttpRequestException("Response status code does not indicate success: 404 (Not Found).", null, System.Net.HttpStatusCode.NotFound));
             return Products.TryGetValue(normalized ?? "", out var product)

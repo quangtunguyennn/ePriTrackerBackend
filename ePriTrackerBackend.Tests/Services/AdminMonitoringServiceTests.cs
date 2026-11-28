@@ -6,6 +6,8 @@ using ePriTrackerBackend.Services.Admin;
 using ePriTrackerBackend.Tests.Helpers;
 using Microsoft.Extensions.Logging.Abstractions;
 
+using ePriTrackerBackend.Scraping.Core;
+
 namespace ePriTrackerBackend.Tests.Services
 {
     public class AdminMonitoringServiceTests : IDisposable
@@ -33,9 +35,11 @@ namespace ePriTrackerBackend.Tests.Services
 
         public void Dispose() => _db.Dispose();
 
+        private readonly PlatformBlockTracker _blocks = new(new ManualTime());
+
         private AdminMonitoringService Create()
             => new(new AdminRepository(_db.Context), _metrics, _jobs, new SingleScraperResolver(_scraper), new[] { _scraper },
-                NullLogger<AdminMonitoringService>.Instance, new ManualTime());
+                NullLogger<AdminMonitoringService>.Instance, new ManualTime(), _blocks);
 
         private void SetCrawlState(Guid productId, DateTimeOffset? nextCrawlAt, DateTimeOffset? lastUpdatedAt, bool inStock = true)
         {
@@ -118,6 +122,26 @@ namespace ePriTrackerBackend.Tests.Services
             Assert.Equal(0, fake.StaleProducts);
             Assert.Equal(0, fake.OverdueProducts);
             Assert.Equal(0, fake.OutOfStockProducts);
+        }
+
+        [Fact]
+        public async Task BlockedPlatform_ShowsPauseAndBlockCount()
+        {
+            for (int i = 0; i < PlatformBlockTracker.BlocksToPause; i++) _blocks.RecordBlocked("Fake", "403 (Forbidden)");
+
+            var fake = (await Create().GetMonitoringAsync()).Platforms.Single(p => p.Platform == "Fake");
+
+            Assert.Equal(Now.Add(PlatformBlockTracker.FirstPause), fake.PausedUntil);
+            Assert.Equal(PlatformBlockTracker.BlocksToPause, fake.ConsecutiveBlocks);
+        }
+
+        [Fact]
+        public async Task HealthyPlatform_NoPause()
+        {
+            var fake = (await Create().GetMonitoringAsync()).Platforms.Single(p => p.Platform == "Fake");
+
+            Assert.Null(fake.PausedUntil);
+            Assert.Equal(0, fake.ConsecutiveBlocks);
         }
 
         [Fact]

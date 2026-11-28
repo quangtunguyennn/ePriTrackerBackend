@@ -22,6 +22,9 @@ namespace ePriTrackerBackend.Scraping
             services.AddSingleton<IScraperMetrics>(sp => sp.GetRequiredService<ScraperMetricsService>());
             services.AddSingleton<IScraperMetricsReader>(sp => sp.GetRequiredService<ScraperMetricsService>());
 
+            // Sàn đang chặn (403/429 liên tục) → job giá tạm dừng cào sàn đó; một instance để giữ trạng thái qua các lượt job
+            services.AddSingleton<IPlatformBlockTracker, PlatformBlockTracker>();
+
             services.AddTikiScraper();
             services.AddCellphoneSScraper();
             services.AddHacomScraper();
