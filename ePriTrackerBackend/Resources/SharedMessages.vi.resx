@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sinh từ danh sách khoá: KHOÁ = câu tiếng Anh mà API trả về (xem Localization/MessageTranslator.cs). -->
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <data name="Product not found." xml:space="preserve">
+    <value>Không tìm thấy sản phẩm.</value>
+  </data>
+  <data name="User not found." xml:space="preserve">
+    <value>Không tìm thấy người dùng.</value>
+  </data>
+  <data name="Event not found." xml:space="preserve">
+    <value>Không tìm thấy sự kiện.</value>
+  </data>
+  <data name="Notification not found." xml:space="preserve">
+    <value>Không tìm thấy thông báo.</value>
+  </data>
+  <data name="Delete successfully" xml:space="preserve">
+    <value>Xoá thành công</value>
+  </data>
+  <data name="Invalid email or password." xml:space="preserve">
+    <value>Email hoặc mật khẩu không đúng.</value>
+  </data>
+  <data name="Email is already in use." xml:space="preserve">
+    <value>Email đã được sử dụng.</value>
+  </data>
+  <data name="Register successfully!" xml:space="preserve">
+    <value>Đăng ký thành công!</value>
+  </data>
+  <data name="Product added to your tracking list!" xml:space="preserve">
+    <value>Đã thêm sản phẩm vào danh sách theo dõi!</value>
+  </data>
+  <data name="Added to your tracking list!" xml:space="preserve">
+    <value>Đã thêm vào danh sách theo dõi!</value>
+  </data>
+  <data name="You are already tracking this product!" xml:space="preserve">
+    <value>Bạn đã theo dõi sản phẩm này rồi!</value>
+  </data>
+  <data name="Invalid product link or unsupported platform." xml:space="preserve">
+    <value>Link sản phẩm không hợp lệ hoặc sàn chưa được hỗ trợ.</value>
+  </data>
+  <data name="This product is no longer sold on the platform." xml:space="preserve">
+    <value>Sản phẩm không còn được bán trên sàn.</value>
+  </data>
+  <data name="Product link is required." xml:space="preserve">
+    <value>Link sản phẩm không được trống.</value>
+  </data>
+  <data name="User email is required." xml:space="preserve">
+    <value>Email người dùng không được trống.</value>
+  </data>
+  <data name="This product is not in your tracking list." xml:space="preserve">
+    <value>Sản phẩm không có trong danh sách theo dõi.</value>
+  </data>
+  <data name="Original product not found." xml:space="preserve">
+    <value>Không tìm thấy sản phẩm gốc.</value>
+  </data>
+  <data name="Could not read product information from this page." xml:space="preserve">
+    <value>Không đọc được thông tin sản phẩm từ trang này.</value>
+  </data>
+  <data name="The CellphoneS link does not contain a product ID." xml:space="preserve">
+    <value>Link CellphoneS không chứa mã sản phẩm.</value>
+  </data>
+  <data name="The GearVN link is not a product page." xml:space="preserve">
+    <value>Link GearVN không phải trang sản phẩm.</value>
+  </data>
+  <data name="The HACOM link does not contain a product ID." xml:space="preserve">
+    <value>Link HACOM không chứa mã sản phẩm.</value>
+  </data>
+  <data name="The Tiki link does not contain a product ID." xml:space="preserve">
+    <value>Link Tiki không chứa mã sản phẩm.</value>
+  </data>
+  <data name="This event has ended on the platform or has no products." xml:space="preserve">
+    <value>Sự kiện này đã kết thúc trên sàn hoặc không có sản phẩm.</value>
+  </data>
+  <data name="This event's products are still loading from the platform. Please try again in a few minutes." xml:space="preserve">
+    <value>Sản phẩm của sự kiện đang được tải từ sàn, vui lòng thử lại sau ít phút.</value>
+  </data>
+  <data name="This platform does not publish events automatically." xml:space="preserve">
+    <value>Sàn này không tự đăng sự kiện.</value>
+  </data>
+  <data name="Auto-published event not found." xml:space="preserve">
+    <value>Không tìm thấy sự kiện tự đăng.</value>
+  </data>
+  <data name="Event published successfully!" xml:space="preserve">
+    <value>Đã đăng sự kiện thành công!</value>
+  </data>
+  <data name="This event already exists; its visibility has been updated!" xml:space="preserve">
+    <value>Sự kiện này đã có sẵn, đã cập nhật trạng thái hiển thị!</value>
+  </data>
+  <data name="Loading products from Tiki, check the product count again in a few minutes." xml:space="preserve">
+    <value>Đang tải sản phẩm từ Tiki, kiểm tra lại số sản phẩm sau ít phút.</value>
+  </data>
+  <data name="Note: no products could be read from this page yet (it may be a coupon page or the sale has not started)." xml:space="preserve">
+    <value>Lưu ý: hiện chưa đọc được sản phẩm nào trên trang này (có thể là trang mã giảm giá hoặc sự kiện chưa mở bán).</value>
+  </data>
+  <data name="({0} products)" xml:space="preserve">
+    <value>({0} sản phẩm)</value>
+  </data>
+  <data name="Event republished!" xml:space="preserve">
+    <value>Đã đăng lại sự kiện!</value>
+  </data>
+  <data name="Event unpublished successfully!" xml:space="preserve">
+    <value>Đã gỡ sự kiện thành công!</value>
+  </data>
+  <data name="Event deleted successfully." xml:space="preserve">
+    <value>Đã xoá sự kiện thành công.</value>
+  </data>
+  <data name="Failed to fetch Tiki data." xml:space="preserve">
+    <value>Lấy dữ liệu Tiki thất bại.</value>
+  </data>
+</root>

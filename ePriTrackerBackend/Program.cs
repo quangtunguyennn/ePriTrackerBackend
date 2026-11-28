@@ -1,5 +1,6 @@
 ﻿using ePriTrackerBackend.Extensions;
 using ePriTrackerBackend.Hubs;
+using ePriTrackerBackend.Localization;
 using ePriTrackerBackend.Services.Notification;
 using ePriTrackerBackend.Models.Context;
 using ePriTrackerBackend.Repositories;
@@ -75,7 +76,9 @@ builder.Services.AddCors(options =>
 builder.Services.AddScraping();             // Telemetry, các sàn TMĐT (Strategy), bộ chọn sàn
 builder.Services.AddRepositories();         // Truy cập DB
 builder.Services.AddApplicationServices();  // Nghiệp vụ, thông báo + điểm vào job Hangfire
-builder.Services.AddControllers();
+// Đa ngôn ngữ: câu "message" trả cho FE dịch theo Accept-Language (en mặc định, vi) – bản dịch ở Resources/SharedMessages.vi.resx
+builder.Services.AddLocalization(options => options.ResourcesPath = "Resources");
+builder.Services.AddControllers(options => options.Filters.Add<LocalizeMessageFilter>());
 
 // Realtime cho chuông thông báo: hub SignalR + bộ đẩy tín hiệu (NotificationService gọi sau khi lưu thông báo)
 builder.Services.AddSignalR();
@@ -146,6 +149,17 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 app.UseCors("AllowAll");
+
+// Ngôn ngữ câu chữ (UICulture) của request lấy từ header Accept-Language (FE gửi theo nút EN | VI); lạ/thiếu → tiếng Anh.
+// CHỈ đổi UICulture: Culture (định dạng số/ngày dùng khi cào, parse giá) giữ nguyên như trước, không phụ thuộc người dùng.
+var serverCulture = System.Globalization.CultureInfo.CurrentCulture;
+var uiCultures = new[] { new System.Globalization.CultureInfo("en"), new System.Globalization.CultureInfo("vi") };
+app.UseRequestLocalization(new RequestLocalizationOptions
+{
+    DefaultRequestCulture = new Microsoft.AspNetCore.Localization.RequestCulture(serverCulture, uiCultures[0]),
+    SupportedCultures = new[] { serverCulture },
+    SupportedUICultures = uiCultures
+});
 
 app.UseAuthentication();
 app.UseAuthorization();
