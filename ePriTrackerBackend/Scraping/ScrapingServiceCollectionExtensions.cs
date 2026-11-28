@@ -124,7 +124,7 @@ namespace ePriTrackerBackend.Scraping
             // Trang HTML có JSON-LD – dùng HtmlJsonLdFetchStrategy tương tự CellphoneS
             services.AddPlatformHttpClient(HacomScraper.PlatformName, HacomScraper.PlatformName, client =>
             {
-                client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+                client.DefaultRequestHeaders.Add("User-Agent", HacomScraper.HonestUserAgent);
                 client.DefaultRequestHeaders.Add("Accept", "text/html,application/xhtml+xml");
                 client.DefaultRequestHeaders.Add("Accept-Language", "vi-VN,vi;q=0.9");
             });
