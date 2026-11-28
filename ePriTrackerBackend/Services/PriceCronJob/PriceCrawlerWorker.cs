@@ -293,7 +293,7 @@ namespace ePriTrackerBackend.Services.PriceCronJob
                 }
 
                 var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-                string target = $"{requests.Count} sản phẩm";
+                string target = $"{requests.Count} products";
                 try
                 {
                     var prices = await scraper.GetCurrentPricesAsync(requests, cancellationToken);

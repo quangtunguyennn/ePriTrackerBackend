@@ -26,7 +26,7 @@ namespace ePriTrackerBackend.Models.Mappings
             return new LiveEventProductDTO
             {
                 ProductId = scraped.ExternalId,
-                ProductName = scraped.Name ?? "Sản phẩm ẩn",
+                ProductName = scraped.Name ?? "Unknown product",
                 Desc = scraped.Description ?? "", // vd flash sale CellphoneS: "Đã bán 1/10 suất"
                 InitialPrice = scraped.OriginalPrice ?? price, // Không có giá gốc → coi như không giảm
                 LatestPrice = price,

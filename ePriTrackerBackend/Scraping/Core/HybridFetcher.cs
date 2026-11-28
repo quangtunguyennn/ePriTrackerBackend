@@ -21,7 +21,7 @@ namespace ePriTrackerBackend.Scraping.Core
             _platform = platform ?? "?";
             _strategies = strategies?.ToList() ?? throw new ArgumentNullException(nameof(strategies));
             if (_strategies.Count == 0)
-                throw new ArgumentException("Cần ít nhất một IFetchStrategy.", nameof(strategies));
+                throw new ArgumentException("At least one IFetchStrategy is required.", nameof(strategies));
 
             _metrics = metrics ?? throw new ArgumentNullException(nameof(metrics));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));

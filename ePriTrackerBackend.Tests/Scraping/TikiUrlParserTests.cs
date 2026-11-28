@@ -108,7 +108,7 @@ namespace ePriTrackerBackend.Tests.Scraping
         [Fact]
         public void DefaultEventTitle_UnchangedText()
         {
-            Assert.Equal("Sự kiện Tiki Khuyến Mãi", TikiUrlParser.DefaultEventTitle);
+            Assert.Equal("Tiki Promotion", TikiUrlParser.DefaultEventTitle);
         }
     }
 }

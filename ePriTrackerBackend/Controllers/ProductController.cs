@@ -44,7 +44,7 @@ namespace ePriTrackerBackend.Controllers
                 // Truyền thêm request.TargetPrice vào hàm AddProductAsync
                 await _tracking.AddProductAsync(request.ProductLink, userEmail, request.TargetPrice);
 
-                return Ok(new { message = "Thêm sản phẩm vào danh sách theo dõi thành công!" });
+                return Ok(new { message = "Product added to your tracking list!" });
             }
             catch (Exception ex)
             {
@@ -76,7 +76,7 @@ namespace ePriTrackerBackend.Controllers
             // Kèm giá ban đầu của CHÍNH người đang xem (bảng Item)
             var product = await _tracking.GetTrackedProductAsync(id, userEmail);
 
-            if (product == null) return NotFound(new { message = "Không tìm thấy sản phẩm." });
+            if (product == null) return NotFound(new { message = "Product not found." });
 
             return product;
         }
@@ -169,6 +169,6 @@ namespace ePriTrackerBackend.Controllers
         private Task<bool> CanAccessAsync(Guid productId, string userEmail)
             => _tracking.CanAccessProductAsync(productId, userEmail, User.IsInRole("Admin"));
 
-        private NotFoundObjectResult ProductNotFound() => NotFound(new { message = "Không tìm thấy sản phẩm." });
+        private NotFoundObjectResult ProductNotFound() => NotFound(new { message = "Product not found." });
     }
 }

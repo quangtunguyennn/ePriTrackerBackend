@@ -22,7 +22,7 @@ namespace ePriTrackerBackend.Controllers
             days = Math.Clamp(days, 0, 1095);
 
             var result = await _service.GetAsync(productId, days, cancellationToken);
-            return result == null ? NotFound(new { message = "Không tìm thấy sản phẩm." }) : Ok(result);
+            return result == null ? NotFound(new { message = "Product not found." }) : Ok(result);
         }
     }
 }

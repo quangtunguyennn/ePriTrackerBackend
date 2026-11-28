@@ -17,10 +17,10 @@ namespace ePriTrackerBackend.Scraping.CellphoneS
         public static JsonElement Data(JsonElement root)
         {
             if (root.TryGetProperty("errors", out var errors) && errors.ValueKind == JsonValueKind.Array && errors.GetArrayLength() > 0)
-                throw new InvalidOperationException("CellphoneS API báo lỗi: " + errors[0].GetRawText());
+                throw new InvalidOperationException("CellphoneS API returned an error: " + errors[0].GetRawText());
 
             if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
-                throw new InvalidOperationException("CellphoneS API không trả dữ liệu.");
+                throw new InvalidOperationException("CellphoneS API returned no data.");
 
             return data;
         }

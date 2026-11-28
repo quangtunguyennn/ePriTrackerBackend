@@ -62,7 +62,7 @@ namespace ePriTrackerBackend.Tests.Scraping
             Assert.Equal(44490000m, asus.OriginalPrice);
             Assert.Equal("https://cellphones.com.vn/laptop-asus-tuf-gaming-a16-fa607nuq-rl007w.html", asus.Url);
             Assert.Equal("https://cdn2.cellphones.com.vn/laptop-asus-tuf-gaming-a16-fa607nuq-rl007w.png", asus.ImageUrl);
-            Assert.Equal("Đã bán 2/10 suất", asus.Description);
+            Assert.Equal("Sold 2/10", asus.Description);
             Assert.Equal(flash.Products[0].ImageUrl, flash.ImageUrl);
         }
 

@@ -36,14 +36,14 @@ namespace ePriTrackerBackend.Scraping.Hacom
     {
         public static IReadOnlyList<HacomDeal> Parse(string json)
         {
-            if (string.IsNullOrWhiteSpace(json)) throw new FormatException("Phản hồi deal HACOM rỗng.");
+            if (string.IsNullOrWhiteSpace(json)) throw new FormatException("Empty HACOM deal response.");
 
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
-                throw new FormatException("Phản hồi deal HACOM không có mảng data (API đổi định dạng?).");
+                throw new FormatException("HACOM deal response has no data array (API format changed?).");
             if (root.TryGetProperty("success", out var success) && success.ValueKind == JsonValueKind.False)
-                throw new FormatException("API deal HACOM báo lỗi: " + GetString(root, "message"));
+                throw new FormatException("HACOM deal API returned an error: " + GetString(root, "message"));
 
             return data.EnumerateArray()
                 .Where(item => item.ValueKind == JsonValueKind.Object)

@@ -162,7 +162,7 @@ namespace ePriTrackerBackend.Scraping.CellphoneS
         public async Task<ScrapedProduct> GetProductAsync(string productUrl, CancellationToken cancellationToken = default)
         {
             if (!CellphoneSUrlParser.TryGetSlug(productUrl, out var slug))
-                throw new ArgumentException("Link CellphoneS không chứa mã sản phẩm.", nameof(productUrl));
+                throw new ArgumentException("The CellphoneS link does not contain a product ID.", nameof(productUrl));
 
             string url = CellphoneSUrlParser.NormalizeProductUrl(slug);
             JsonElement product = await _fetcher.FetchJsonAsync(url, cancellationToken: cancellationToken);

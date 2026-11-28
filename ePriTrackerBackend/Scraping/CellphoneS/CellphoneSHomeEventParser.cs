@@ -25,7 +25,7 @@ namespace ePriTrackerBackend.Scraping.CellphoneS
         private static readonly Regex DealTitle = new(@"^DEAL SỐC\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex Price = new(@"^\d{1,3}(?:\.\d{3})+\s*đ$", RegexOptions.Compiled);
         private static readonly Regex Slot = new(@"^(\d{1,2})\s*-\s*(\d{1,2})\s*h\s+(\d{1,2})/(\d{1,2})$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-        private static readonly Regex SoldQuota = new(@"^Đã bán \d+/\d+ suất$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex SoldQuota = new(@"^Đã bán (\d+)/(\d+) suất$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex Whitespace = new(@"\s+", RegexOptions.Compiled);
         private static readonly Regex NonSlug = new(@"[^a-z0-9]+", RegexOptions.Compiled);
 
@@ -39,7 +39,7 @@ namespace ePriTrackerBackend.Scraping.CellphoneS
             var flashBlock = FindBlock(document, FlashSaleTitle);
             var dealBlock = FindBlock(document, DealTitle);
             if (flashBlock == null && dealBlock == null)
-                throw new InvalidOperationException("Không nhận diện được khối sự kiện nào trên trang chủ CellphoneS.");
+                throw new InvalidOperationException("No event blocks recognized on the CellphoneS home page.");
 
             var events = new List<ScrapedEvent>();
 
@@ -163,8 +163,8 @@ namespace ePriTrackerBackend.Scraping.CellphoneS
                     OriginalPrice = original,
                     ImageUrl = ProductImage(image),
                     Url = CellphoneSUrlParser.NormalizeProductUrl(slug),
-                    // "Đã bán 1/10 suất" của flash sale → hiện kèm sản phẩm
-                    Description = Leaves(card).Select(Text).FirstOrDefault(t => t != null && SoldQuota.IsMatch(t))
+                    // "Đã bán 1/10 suất" của flash sale → hiện kèm sản phẩm (đổi sang "Sold 1/10")
+                    Description = SoldLabel(Leaves(card).Select(Text).FirstOrDefault(t => t != null && SoldQuota.IsMatch(t)))
                 });
             }
 
@@ -175,6 +175,13 @@ namespace ePriTrackerBackend.Scraping.CellphoneS
         /// Ảnh giữ chỗ (ảnh tải lỗi → trang đổi sang "placehoder.png") hoặc ảnh nhúng data: → coi như không có ảnh,
         /// để không hiện ảnh trống cho người dùng.
         /// </summary>
+        /// <summary>"Đã bán 3/10 suất" (chữ trên trang CellphoneS) → "Sold 3/10" (giao diện tiếng Anh); null giữ null.</summary>
+        private static string SoldLabel(string text)
+        {
+            var match = text == null ? null : SoldQuota.Match(text);
+            return match is { Success: true } ? $"Sold {match.Groups[1].Value}/{match.Groups[2].Value}" : null;
+        }
+
         private static string ProductImage(HtmlNode image)
         {
             string src = Attr(image, "src");

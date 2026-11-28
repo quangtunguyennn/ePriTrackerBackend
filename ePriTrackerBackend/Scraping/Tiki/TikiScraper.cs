@@ -95,7 +95,7 @@ namespace ePriTrackerBackend.Scraping.Tiki
                 JsonElement root = await _fetcher.FetchJsonAsync(EventBannerApiUrl, cancellationToken: cancellationToken);
 
                 // Bắt lấy toàn bộ JSON thô mà Tiki trả về
-                string rawJson = root.ValueKind != JsonValueKind.Undefined ? root.GetRawText() : "Dữ liệu trả về rỗng (WAF chặn)";
+                string rawJson = root.ValueKind != JsonValueKind.Undefined ? root.GetRawText() : "Empty response (blocked by WAF)";
 
                 if (root.TryGetProperty("data", out JsonElement dataArray) && dataArray.ValueKind == JsonValueKind.Array)
                 {
@@ -128,7 +128,7 @@ namespace ePriTrackerBackend.Scraping.Tiki
                 // BẪY BẮT LỖI: Nếu lấy được 0 sự kiện, ném thẳng JSON của Tiki ra để Admin thấy trên Swagger/UI
                 if (events.Count == 0)
                 {
-                    throw new Exception($"Tiki trả về: {rawJson}");
+                    throw new Exception($"Tiki returned: {rawJson}");
                 }
 
                 return events;

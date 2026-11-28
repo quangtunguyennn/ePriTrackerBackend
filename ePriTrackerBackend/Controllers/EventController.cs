@@ -47,16 +47,16 @@ namespace ePriTrackerBackend.Controllers
             {
                 var result = await _eventService.PublishAsync(tikiEvent);
                 string message = result == PublishEventResult.Created
-                    ? "Đã đăng sự kiện thành công!"
-                    : "Sự kiện này đã có sẵn, đã cập nhật trạng thái hiển thị!";
+                    ? "Event published successfully!"
+                    : "This event already exists; its visibility has been updated!";
 
                 // Cào ngay để Admin biết sự kiện có sản phẩm không (trang coupon / chưa mở bán thì người dùng mở ra sẽ trống)
                 int? productCount = await _eventService.CheckLiveProductCountAsync(tikiEvent.EventId);
                 string note = productCount switch
                 {
-                    null => " Đang tải sản phẩm từ Tiki, kiểm tra lại số sản phẩm sau ít phút.",
-                    0 => " Lưu ý: hiện chưa đọc được sản phẩm nào trên trang này (có thể là trang mã giảm giá hoặc sự kiện chưa mở bán).",
-                    _ => $" ({productCount} sản phẩm)"
+                    null => " Loading products from Tiki, check the product count again in a few minutes.",
+                    0 => " Note: no products could be read from this page yet (it may be a coupon page or the sale has not started).",
+                    _ => $" ({productCount} products)"
                 };
 
                 return Ok(new { message = message + note, productCount });
@@ -81,9 +81,9 @@ namespace ePriTrackerBackend.Controllers
         public async Task<IActionResult> TogglePublish(Guid eventId)
         {
             var isPublished = await _eventService.TogglePublishAsync(eventId);
-            if (isPublished == null) return NotFound(new { message = "Không tìm thấy sự kiện." });
+            if (isPublished == null) return NotFound(new { message = "Event not found." });
 
-            return Ok(new { message = isPublished.Value ? "Đã khôi phục (Đăng lại) sự kiện!" : "Đã gỡ bài thành công!" });
+            return Ok(new { message = isPublished.Value ? "Event republished!" : "Event unpublished successfully!" });
         }
 
         // =======================================================
@@ -109,10 +109,10 @@ namespace ePriTrackerBackend.Controllers
 
                 return result.Status switch
                 {
-                    LiveProductsStatus.EventNotFound => NotFound(new { message = "Không tìm thấy sự kiện trong hệ thống." }),
-                    LiveProductsStatus.NoProducts => BadRequest(new { message = "Sự kiện này đã kết thúc trên sàn hoặc không có sản phẩm." }),
+                    LiveProductsStatus.EventNotFound => NotFound(new { message = "Event not found." }),
+                    LiveProductsStatus.NoProducts => BadRequest(new { message = "This event has ended on the platform or has no products." }),
                     LiveProductsStatus.StillLoading => StatusCode(StatusCodes.Status503ServiceUnavailable,
-                        new { message = "Sản phẩm của sự kiện đang được tải từ sàn, vui lòng thử lại sau ít phút." }),
+                        new { message = "This event's products are still loading from the platform. Please try again in a few minutes." }),
                     _ => Ok(result.Products)
                 };
             }
@@ -134,9 +134,9 @@ namespace ePriTrackerBackend.Controllers
                 var result = await _tracking.TrackDealAsync(userId, request);
 
                 if (result == TrackDealResult.AlreadyTracking)
-                    return BadRequest(new { message = "Bạn đã theo dõi sản phẩm này rồi!" });
+                    return BadRequest(new { message = "You are already tracking this product!" });
 
-                return Ok(new { message = "Đã thêm vào danh sách theo dõi thành công!" });
+                return Ok(new { message = "Added to your tracking list!" });
             }
             catch (Exception ex)
             {
@@ -151,9 +151,9 @@ namespace ePriTrackerBackend.Controllers
             try
             {
                 if (!await _eventService.DeleteAsync(eventId))
-                    return NotFound(new { message = "Không tìm thấy sự kiện để xóa." });
+                    return NotFound(new { message = "Event not found." });
 
-                return Ok(new { message = "Đã xóa sự kiện thành công." });
+                return Ok(new { message = "Event deleted successfully." });
             }
             catch (Exception ex)
             {

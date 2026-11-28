@@ -79,7 +79,7 @@ namespace ePriTrackerBackend.Tests.Scraping
             var strategy = new HtmlJsonLdFetchStrategy(new StubFactory(new StubHandler(HttpStatusCode.OK, CategoryHtml)), "x");
 
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => strategy.FetchJsonAsync("https://shop.vn/laptop/asus.html", FetchOptions.Default));
-            Assert.Equal("Không đọc được thông tin sản phẩm từ trang này.", ex.Message);
+            Assert.Equal("Could not read product information from this page.", ex.Message);
         }
 
         [Fact]

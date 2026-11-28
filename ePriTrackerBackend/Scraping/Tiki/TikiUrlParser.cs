@@ -10,7 +10,7 @@ namespace ePriTrackerBackend.Scraping.Tiki
     public static class TikiUrlParser
     {
         public const string BaseUrl = "https://tiki.vn";
-        public const string DefaultEventTitle = "Sự kiện Tiki Khuyến Mãi";
+        public const string DefaultEventTitle = "Tiki Promotion";
 
         private static readonly Regex ProductIdRegex = new Regex(@"-p(\d+)\.html", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
@@ -42,7 +42,7 @@ namespace ePriTrackerBackend.Scraping.Tiki
         public static string BuildProductApiPath(string productUrl)
         {
             if (!TryGetProductId(productUrl, out var productId))
-                throw new ArgumentException("Link Tiki không chứa Product ID.", nameof(productUrl));
+                throw new ArgumentException("The Tiki link does not contain a product ID.", nameof(productUrl));
 
             string spid = TryParseAbsolute(productUrl, out var uri)
                 ? HttpUtility.ParseQueryString(uri.Query)["spid"]

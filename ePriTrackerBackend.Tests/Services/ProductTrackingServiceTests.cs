@@ -70,7 +70,7 @@ namespace ePriTrackerBackend.Tests.Services
             await _service.AddProductAsync("https://fake.vn/x-p7.html", "u@test.vn");
 
             var product = _db.Fresh().Product.Single();
-            Assert.Equal("Sản phẩm không xác định", product.ProductName);
+            Assert.Equal("Unknown product", product.ProductName);
             Assert.Null(_db.Fresh().Item.Single().InitialPrice);  // chưa có giá → null (job giá điền khi có giá)
             Assert.Empty(_db.Fresh().PriceHistory);               // không ghi giá 0 vào lịch sử
             Assert.Equal("", product.ImageURL);
@@ -115,14 +115,14 @@ namespace ePriTrackerBackend.Tests.Services
 
             var ex = await Assert.ThrowsAsync<Exception>(() => _service.AddProductAsync(link, "u@test.vn"));
             // Câu chung cho mọi sàn (trước đây là "Link Tiki không hợp lệ..." – sai nghĩa khi có sàn thứ hai)
-            Assert.Equal("Link sản phẩm không hợp lệ hoặc sàn chưa được hỗ trợ.", ex.Message);
+            Assert.Equal("Invalid product link or unsupported platform.", ex.Message);
         }
 
         [Fact]
         public async Task AddProduct_UnknownUser_ThrowsLegacyMessage()
         {
             var ex = await Assert.ThrowsAsync<Exception>(() => _service.AddProductAsync("https://fake.vn/x-p123.html", "ai@test.vn"));
-            Assert.Equal("Không tìm thấy thông tin người dùng.", ex.Message);
+            Assert.Equal("User not found.", ex.Message);
         }
 
         [Fact]
@@ -280,7 +280,7 @@ namespace ePriTrackerBackend.Tests.Services
             _db.AddUser("u@test.vn");
 
             var ex = await Assert.ThrowsAsync<Exception>(() => _service.UntrackProductAsync(Guid.NewGuid(), "u@test.vn"));
-            Assert.Equal("Sản phẩm không tồn tại trong danh sách theo dõi.", ex.Message);
+            Assert.Equal("This product is not in your tracking list.", ex.Message);
         }
     }
 }
