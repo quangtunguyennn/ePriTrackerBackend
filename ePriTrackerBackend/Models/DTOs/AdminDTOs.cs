@@ -38,6 +38,12 @@ namespace ePriTrackerBackend.Models.DTOs
         /// <summary>Sàn đã gỡ (ngưng cào) – không tính vào quá hạn / lâu không cập nhật.</summary>
         public int DelistedProducts { get; set; }
 
+        /// <summary>Job giá đang tạm dừng cào sàn này tới thời điểm này vì sàn chặn (403/429 liên tục); null = bình thường.</summary>
+        public DateTimeOffset? PausedUntil { get; set; }
+
+        /// <summary>Số lần liên tiếp sàn trả 403/429 gần đây (0 = không bị chặn).</summary>
+        public int ConsecutiveBlocks { get; set; }
+
         public List<PlatformOperationStats> Operations { get; set; } = new();
     }
 

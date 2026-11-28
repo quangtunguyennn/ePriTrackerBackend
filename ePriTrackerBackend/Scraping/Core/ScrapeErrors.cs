@@ -19,5 +19,19 @@ namespace ePriTrackerBackend.Scraping.Core
             }
             return false;
         }
+
+        /// <summary>
+        /// Sàn từ chối request: 403 (Forbidden – tường lửa / chống bot) hoặc 429 (Too Many Requests). Sản phẩm vẫn còn,
+        /// chỉ là đang bị chặn → không tính là "không tồn tại"; job giá tạm dừng cào sàn đó (xem <see cref="PlatformBlockTracker"/>).
+        /// </summary>
+        public static bool IsBlocked(Exception exception)
+        {
+            for (var e = exception; e != null; e = e.InnerException)
+            {
+                if (e is HttpRequestException { StatusCode: HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests }) return true;
+                if (e is AggregateException aggregate && aggregate.InnerExceptions.Any(IsBlocked)) return true;
+            }
+            return false;
+        }
     }
 }

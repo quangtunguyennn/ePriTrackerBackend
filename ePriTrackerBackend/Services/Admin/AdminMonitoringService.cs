@@ -1,6 +1,7 @@
 using ePriTrackerBackend.Models.DTOs;
 using ePriTrackerBackend.Repositories;
 using ePriTrackerBackend.Scraping.Abstractions;
+using ePriTrackerBackend.Scraping.Core;
 
 namespace ePriTrackerBackend.Services.Admin
 {
@@ -30,6 +31,7 @@ namespace ePriTrackerBackend.Services.Admin
         private readonly IEnumerable<IPlatformScraper> _platforms;
         private readonly TimeProvider _time;
         private readonly ILogger<AdminMonitoringService> _logger;
+        private readonly IPlatformBlockTracker _blocks;
 
         public AdminMonitoringService(
             IAdminRepository admin,
@@ -38,8 +40,10 @@ namespace ePriTrackerBackend.Services.Admin
             IPlatformScraperResolver resolver,
             IEnumerable<IPlatformScraper> platforms,
             ILogger<AdminMonitoringService> logger,
-            TimeProvider timeProvider = null)
+            TimeProvider timeProvider = null,
+            IPlatformBlockTracker blockTracker = null)
         {
+            _blocks = blockTracker;
             _admin = admin ?? throw new ArgumentNullException(nameof(admin));
             _metrics = metrics ?? throw new ArgumentNullException(nameof(metrics));
             _jobs = jobs ?? throw new ArgumentNullException(nameof(jobs));
@@ -76,6 +80,7 @@ namespace ePriTrackerBackend.Services.Admin
                 {
                     var products = tracked.GetValueOrDefault(name) ?? new List<AdminProductRow>();
                     var crawled = products.Where(p => !p.IsDelisted).ToList(); // sản phẩm đã gỡ ngưng cào → không phải "quá hạn"
+                    var block = _blocks?.GetStatus(name);
                     return new PlatformMonitoringDTO
                     {
                         Platform = name,
@@ -84,6 +89,8 @@ namespace ePriTrackerBackend.Services.Admin
                         StaleProducts = crawled.Count(p => (p.LastCheckedAt ?? p.LastUpdatedAt) is not DateTimeOffset checkedAt || now - checkedAt > StaleAfter),
                         OutOfStockProducts = crawled.Count(p => !p.IsInStock),
                         DelistedProducts = products.Count(p => p.IsDelisted),
+                        PausedUntil = block?.PausedUntil,
+                        ConsecutiveBlocks = block?.ConsecutiveBlocks ?? 0,
                         Operations = snapshot.Operations.Where(o => string.Equals(o.Platform, name, StringComparison.OrdinalIgnoreCase)).ToList()
                     };
                 }).ToList()

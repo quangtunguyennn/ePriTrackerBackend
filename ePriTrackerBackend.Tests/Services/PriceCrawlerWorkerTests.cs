@@ -1,6 +1,7 @@
 using ePriTrackerBackend.Models.Entities;
 using ePriTrackerBackend.Repositories;
 using ePriTrackerBackend.Scraping.Abstractions;
+using ePriTrackerBackend.Scraping.Core;
 using ePriTrackerBackend.Services.Notification;
 using ePriTrackerBackend.Services.PriceCronJob;
 using ePriTrackerBackend.Tests.Helpers;
@@ -212,11 +213,11 @@ namespace ePriTrackerBackend.Tests.Services
             }
         }
 
-        private PriceCrawlerWorker Job(IPlatformScraper scraper)
+        private PriceCrawlerWorker Job(IPlatformScraper scraper, IPlatformBlockTracker? blocks = null)
         {
             var ctx = _db.Context;
             return new PriceCrawlerWorker(new ProductRepository(ctx), new PriceHistoryRepository(ctx), new TrackedItemRepository(ctx), new EfUnitOfWork(ctx),
-                new SingleScraperResolver(scraper), _notifications, NullLogger<PriceCrawlerWorker>.Instance);
+                new SingleScraperResolver(scraper), _notifications, NullLogger<PriceCrawlerWorker>.Instance, blockTracker: blocks);
         }
 
         [Fact]
@@ -325,6 +326,59 @@ namespace ePriTrackerBackend.Tests.Services
             Assert.Equal(1, stored.CurrentTier);
             Assert.Equal(60, stored.CrawlIntervalMinutes);
             Assert.InRange(stored.NextCrawlAt!.Value, before.AddMinutes(59), DateTimeOffset.UtcNow.AddMinutes(61));
+        }
+
+        [Fact]
+        public async Task PlatformBlocking_403Repeated_PausesPlatform_RestPostponed_NotCountedAsDelisted()
+        {
+            // Sàn chặn mọi trang sản phẩm (403): sau 3 lần liên tiếp → tạm dừng cả sàn, các sản phẩm còn lại không gửi request
+            var products = Enumerable.Range(1, 8).Select(i => Tracked(i.ToString(), 1000)).ToList();
+            _scraper.BlockAll = true;
+            var blocks = new PlatformBlockTracker();
+            var before = DateTimeOffset.UtcNow;
+
+            await Job(_scraper, blocks).ProcessPendingProductsAsync();
+
+            Assert.Equal(5, _scraper.RequestedUrls.Count); // nhóm đầu 5 request song song; nhóm sau bị bỏ qua
+            Assert.True(blocks.IsPaused("Fake", out var until));
+            Assert.InRange(until, before.Add(PlatformBlockTracker.FirstPause).AddMinutes(-1), DateTimeOffset.UtcNow.Add(PlatformBlockTracker.FirstPause));
+            foreach (var p in products.Select(Reload))
+            {
+                Assert.Equal(1000m, p.LatestPrice);
+                Assert.Equal(0, p.NotFoundCount);  // 403 không phải "không còn trên sàn"
+                Assert.False(p.IsDelisted);
+                Assert.InRange(p.NextCrawlAt!.Value, until.AddSeconds(-1), until.AddSeconds(1)); // hẹn đúng lúc hết tạm dừng
+            }
+        }
+
+        [Fact]
+        public async Task PlatformAlreadyPaused_NoRequests_ProductsWaitForResume()
+        {
+            var product = Tracked("1", 1000);
+            _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { ExternalId = "1", Price = 900 };
+            var blocks = new PlatformBlockTracker();
+            for (int i = 0; i < PlatformBlockTracker.BlocksToPause; i++) blocks.RecordBlocked("Fake", "403");
+            Assert.True(blocks.IsPaused("Fake", out var until));
+
+            await Job(_scraper, blocks).ProcessPendingProductsAsync();
+
+            Assert.Empty(_scraper.RequestedUrls);
+            var stored = Reload(product);
+            Assert.Equal(1000m, stored.LatestPrice);
+            Assert.InRange(stored.NextCrawlAt!.Value, until.AddSeconds(-1), until.AddSeconds(1));
+        }
+
+        [Fact]
+        public async Task SuccessfulFetch_ClearsBlockCount()
+        {
+            Tracked("1", 1000);
+            _scraper.Products[FakePlatformScraper.Normalized("1")] = new ScrapedProduct { ExternalId = "1", Price = 1000 };
+            var blocks = new PlatformBlockTracker();
+            blocks.RecordBlocked("Fake", "403");
+
+            await Job(_scraper, blocks).ProcessPendingProductsAsync();
+
+            Assert.Null(blocks.GetStatus("Fake"));
         }
 
         [Fact]
