@@ -32,7 +32,7 @@ namespace ePriTrackerBackend.Tests.Mappings
         {
             var dto = new ScrapedProduct { ExternalId = "6", Price = 50000 }.ToLiveEventProductDto();
 
-            Assert.Equal("Sản phẩm ẩn", dto.ProductName);
+            Assert.Equal("Unknown product", dto.ProductName);
             Assert.Equal(50000m, dto.InitialPrice); // không có giá gốc → bằng giá bán
             Assert.Equal("", dto.ImageURL);
             Assert.Equal("", dto.ProductLink);

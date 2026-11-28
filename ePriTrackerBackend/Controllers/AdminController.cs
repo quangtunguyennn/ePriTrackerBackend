@@ -37,7 +37,7 @@ namespace ePriTrackerBackend.Controllers
         {
             var result = await _events.SyncNowAsync(platform, cancellationToken);
             return result == null
-                ? NotFound(new { message = "Sàn này không tự đăng sự kiện." })
+                ? NotFound(new { message = "This platform does not publish events automatically." })
                 : Ok(result);
         }
 
@@ -47,7 +47,7 @@ namespace ePriTrackerBackend.Controllers
         {
             var result = await _events.SetHiddenAsync(eventId, request?.Hidden ?? false);
             return result == null
-                ? NotFound(new { message = "Không tìm thấy sự kiện tự đăng." })
+                ? NotFound(new { message = "Auto-published event not found." })
                 : Ok(result);
         }
 

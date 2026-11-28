@@ -63,7 +63,7 @@ namespace ePriTrackerBackend.Scraping.Hacom
         public async Task<ScrapedProduct> GetProductAsync(string productUrl, CancellationToken cancellationToken = default)
         {
             if (!HacomUrlParser.TryGetSlug(productUrl, out var slug))
-                throw new ArgumentException("Link HACOM không chứa mã sản phẩm.", nameof(productUrl));
+                throw new ArgumentException("The HACOM link does not contain a product ID.", nameof(productUrl));
 
             string url = HacomUrlParser.NormalizeProductUrl(slug);
             JsonElement product = await _fetcher.FetchJsonAsync(url, cancellationToken: cancellationToken);

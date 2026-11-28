@@ -22,7 +22,7 @@ namespace ePriTrackerBackend.Scraping.Core
         {
             _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
             _httpClientName = string.IsNullOrWhiteSpace(httpClientName)
-                ? throw new ArgumentException("Thiếu tên HttpClient.", nameof(httpClientName))
+                ? throw new ArgumentException("HttpClient name is required.", nameof(httpClientName))
                 : httpClientName;
             _htmlFields = htmlFields ?? new Dictionary<string, string>();
         }
@@ -33,7 +33,7 @@ namespace ePriTrackerBackend.Scraping.Core
         public async Task<JsonElement> FetchJsonAsync(string path, FetchOptions options, CancellationToken cancellationToken = default)
         {
             if (!Uri.TryCreate(path, UriKind.Absolute, out var url))
-                throw new ArgumentException("Cần URL tuyệt đối của trang sản phẩm.", nameof(path));
+                throw new ArgumentException("An absolute product page URL is required.", nameof(path));
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             if (options?.Timeout is TimeSpan timeout)
@@ -48,7 +48,7 @@ namespace ePriTrackerBackend.Scraping.Core
             document.LoadHtml(html);
 
             var product = JsonLdProductReader.FindProduct(document)
-                ?? throw new InvalidOperationException("Không đọc được thông tin sản phẩm từ trang này.");
+                ?? throw new InvalidOperationException("Could not read product information from this page.");
 
             return _htmlFields.Count == 0 ? product : AddHtmlFields(product, document);
         }

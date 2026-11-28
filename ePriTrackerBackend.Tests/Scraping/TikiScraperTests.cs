@@ -165,7 +165,7 @@ namespace ePriTrackerBackend.Tests.Scraping
             // Hành vi cũ: Admin thấy JSON Tiki trả về ngay trên Swagger/UI để biết bị WAF chặn hay đổi cấu trúc
             var ex = await Assert.ThrowsAsync<Exception>(() => Create(new FakeFetcher(_ => Json("{\"data\":[]}"))).GetCurrentEventsAsync());
 
-            Assert.Equal("Tiki trả về: {\"data\":[]}", ex.Message);
+            Assert.Equal("Tiki returned: {\"data\":[]}", ex.Message);
         }
 
         [Fact]

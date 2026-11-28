@@ -50,7 +50,7 @@ namespace ePriTrackerBackend.Scraping.Gearvn
         public async Task<ScrapedProduct> GetProductAsync(string productUrl, CancellationToken cancellationToken = default)
         {
             if (!GearvnUrlParser.TryGetHandle(productUrl, out var handle))
-                throw new ArgumentException("Link GearVN không phải trang sản phẩm.", nameof(productUrl));
+                throw new ArgumentException("The GearVN link is not a product page.", nameof(productUrl));
 
             string url = GearvnUrlParser.NormalizeProductUrl(handle);
             JsonElement product = await _fetcher.FetchJsonAsync(url, cancellationToken: cancellationToken);

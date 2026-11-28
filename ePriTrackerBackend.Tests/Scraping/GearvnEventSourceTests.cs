@@ -201,7 +201,7 @@ namespace ePriTrackerBackend.Tests.Scraping
         {
             // Chương trình LG: offer = "$undefined" → mô tả lấy từ quà tặng
             var lg = (await Source().GetLiveEventsAsync())[0];
-            Assert.Equal("Tặng: Chuột G304", Assert.Single(lg.Products).Description);
+            Assert.Equal("Gift: Chuột G304", Assert.Single(lg.Products).Description);
         }
 
         [Fact]

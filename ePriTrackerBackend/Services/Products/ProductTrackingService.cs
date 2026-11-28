@@ -26,8 +26,8 @@ namespace ePriTrackerBackend.Services.Products
 
     public class ProductTrackingService : IProductTrackingService
     {
-        public const string InvalidLinkMessage = "Link sản phẩm không hợp lệ hoặc sàn chưa được hỗ trợ.";
-        public const string DelistedMessage = "Sản phẩm không còn được bán trên sàn.";
+        public const string InvalidLinkMessage = "Invalid product link or unsupported platform.";
+        public const string DelistedMessage = "This product is no longer sold on the platform.";
         private static readonly Regex CampaignCodeRegex = new Regex(@"itm_campaign=([^&]+)", RegexOptions.Compiled);
 
         private readonly IUserRepository _users;
@@ -71,11 +71,11 @@ namespace ePriTrackerBackend.Services.Products
 
         public async Task AddProductAsync(string productLink, string userEmail, decimal? targetPrice = null)
         {
-            if (string.IsNullOrWhiteSpace(productLink)) throw new ArgumentException("Link sản phẩm không được trống.", nameof(productLink));
-            if (string.IsNullOrWhiteSpace(userEmail)) throw new ArgumentException("Email người dùng không được trống.", nameof(userEmail));
+            if (string.IsNullOrWhiteSpace(productLink)) throw new ArgumentException("Product link is required.", nameof(productLink));
+            if (string.IsNullOrWhiteSpace(userEmail)) throw new ArgumentException("User email is required.", nameof(userEmail));
 
             var user = await _users.FindByEmailAsync(userEmail);
-            if (user == null) throw new Exception("Không tìm thấy thông tin người dùng.");
+            if (user == null) throw new Exception("User not found.");
 
             if (!_scrapers.TryResolve(productLink, out var scraper) || !scraper.TryNormalizeProductUrl(productLink, out var normalizedLink))
                 throw new Exception(InvalidLinkMessage);
@@ -176,10 +176,10 @@ namespace ePriTrackerBackend.Services.Products
         public async Task<bool> UntrackProductAsync(Guid productId, string userEmail)
         {
             var user = await _users.FindByEmailAsync(userEmail);
-            if (user == null) throw new Exception("Không tìm thấy người dùng");
+            if (user == null) throw new Exception("User not found.");
 
             var item = await _trackedItems.FindAsync(user.UserId, productId);
-            if (item == null) throw new Exception("Sản phẩm không tồn tại trong danh sách theo dõi.");
+            if (item == null) throw new Exception("This product is not in your tracking list.");
 
             _trackedItems.Remove(item);
 
@@ -317,7 +317,7 @@ namespace ePriTrackerBackend.Services.Products
             {
                 ProductId = Guid.NewGuid(),
                 ProductLink = normalizedLink,
-                ProductName = scraped.Name ?? "Sản phẩm không xác định",
+                ProductName = scraped.Name ?? "Unknown product",
                 ImageURL = scraped.ImageUrl ?? "",
                 Description = ProductDescription.Sanitize(scraped.Description),
                 AddedAt = nowVn.DateTime, // Giờ VN

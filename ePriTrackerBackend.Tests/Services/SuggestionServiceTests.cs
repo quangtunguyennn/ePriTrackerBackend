@@ -204,7 +204,7 @@ namespace ePriTrackerBackend.Tests.Services
         public async Task Refresh_UnknownProduct_ThrowsLegacyMessage()
         {
             var ex = await Assert.ThrowsAsync<Exception>(() => _service.RefreshSuggestionsAsync(Guid.NewGuid()));
-            Assert.Equal("Không tìm thấy thông tin sản phẩm gốc.", ex.Message);
+            Assert.Equal("Original product not found.", ex.Message);
         }
     }
 }

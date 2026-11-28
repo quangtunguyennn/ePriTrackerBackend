@@ -88,7 +88,7 @@ namespace ePriTrackerBackend.Services.Events
                     _metrics.Record(new ScrapeRecord
                     {
                         Platform = source.Platform, Operation = ScrapeOperations.Events, Success = true,
-                        Duration = stopwatch.Elapsed, Target = $"{liveEvents.Count} sự kiện"
+                        Duration = stopwatch.Elapsed, Target = $"{liveEvents.Count} events"
                     });
                 }
                 catch (Exception ex)
@@ -98,7 +98,7 @@ namespace ePriTrackerBackend.Services.Events
                     _metrics.Record(new ScrapeRecord
                     {
                         Platform = source.Platform, Operation = ScrapeOperations.Events, Success = false,
-                        Duration = stopwatch.Elapsed, Target = "Đồng bộ sự kiện", Error = ex.Message
+                        Duration = stopwatch.Elapsed, Target = "Event sync", Error = ex.Message
                     });
                     _status.Set(new AutoEventSyncStatus
                     {

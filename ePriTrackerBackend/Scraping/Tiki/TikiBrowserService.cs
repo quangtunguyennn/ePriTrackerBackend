@@ -342,7 +342,7 @@ namespace ePriTrackerBackend.Scraping.Tiki
                     await ResetPageAsync(page);
                 }
 
-                throw new Exception("Lấy dữ liệu Tiki thất bại.", ex);
+                throw new Exception("Failed to fetch Tiki data.", ex);
             }
         }
 

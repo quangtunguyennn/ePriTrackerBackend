@@ -144,7 +144,7 @@ namespace ePriTrackerBackend.Services.Suggestions
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                var timeout = new TimeoutException($"{platform.Platform} tìm kiếm quá {PerPlatformTimeout.TotalSeconds:0}s.");
+                var timeout = new TimeoutException($"{platform.Platform} search timed out after {PerPlatformTimeout.TotalSeconds:0}s.");
                 RecordSearchFailure(platform.Platform, keyword, sw.Elapsed, timeout);
                 throw timeout;
             }

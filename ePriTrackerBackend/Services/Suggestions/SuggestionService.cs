@@ -96,7 +96,7 @@ namespace ePriTrackerBackend.Services.Suggestions
         public async Task<List<SuggestionProductDTO>> RefreshSuggestionsAsync(Guid productId)
         {
             var product = await _products.FindByIdAsync(productId);
-            if (product == null) throw new Exception("Không tìm thấy thông tin sản phẩm gốc.");
+            if (product == null) throw new Exception("Original product not found.");
 
             _logger.LogInformation("Người dùng yêu cầu làm mới gợi ý, ép cào dữ liệu mới cho: {ProductName}", product.ProductName);
 

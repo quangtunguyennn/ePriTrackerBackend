@@ -233,7 +233,7 @@ namespace ePriTrackerBackend.Scraping.CellphoneS
                 OriginalPrice = original > price ? original : null,
                 ImageUrl = CellphoneSApiParser.ImageUrl(slot.Thumbnail) ?? product.ImageUrl,
                 Url = product.Url,
-                Description = slot.MaxSlot > 0 ? $"Đã bán {slot.Sold}/{slot.MaxSlot} suất" : null
+                Description = slot.MaxSlot > 0 ? $"Sold {slot.Sold}/{slot.MaxSlot}" : null
             };
         }
     }

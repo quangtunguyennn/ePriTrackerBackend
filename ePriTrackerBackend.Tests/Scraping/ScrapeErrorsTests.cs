@@ -21,7 +21,7 @@ namespace ePriTrackerBackend.Tests.Scraping
             yield return new object[] { new HttpRequestException("500", null, HttpStatusCode.InternalServerError) };
             yield return new object[] { new HttpRequestException("Connection reset") };                       // lỗi mạng, không có mã
             yield return new object[] { new TaskCanceledException("timeout") };
-            yield return new object[] { new InvalidOperationException("Không đọc được thông tin sản phẩm từ trang này.") };
+            yield return new object[] { new InvalidOperationException("Could not read product information from this page.") };
             yield return new object[] { new Exception("Error: HTTP 404") };                                    // chỉ có chữ, không có mã
         }
 

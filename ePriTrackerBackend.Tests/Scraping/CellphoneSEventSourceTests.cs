@@ -161,7 +161,7 @@ namespace ePriTrackerBackend.Tests.Scraping
             var oppo = flash.Products[0];
             Assert.Equal(11990000m, oppo.Price);
             Assert.Equal(15990000m, oppo.OriginalPrice);
-            Assert.Equal("Đã bán 3/10 suất", oppo.Description);
+            Assert.Equal("Sold 3/10", oppo.Description);
             Assert.Equal("https://cellphones.com.vn/oppo-find-x5-pro.html", oppo.Url);
             Assert.Equal("https://cdn2.cellphones.com.vn/358x/media/catalog/product/o/p/oppo.png", oppo.ImageUrl);
             Assert.Equal(570000m, flash.Products[1].Price); // giá flash giấu → giá đặc biệt

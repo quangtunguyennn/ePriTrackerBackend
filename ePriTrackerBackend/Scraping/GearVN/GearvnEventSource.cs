@@ -132,7 +132,7 @@ namespace ePriTrackerBackend.Scraping.Gearvn
 
                 if (promotions.Count == 0)
                 {
-                    if (page == 1) throw new InvalidOperationException("Không đọc được chương trình nào từ trang khuyến mãi GearVN (trang đổi giao diện hoặc bị chặn).");
+                    if (page == 1) throw new InvalidOperationException("Could not read any promotion from the GearVN promotions page (layout changed or blocked).");
                     break; // hết trang
                 }
                 all.AddRange(promotions);
@@ -204,7 +204,7 @@ namespace ePriTrackerBackend.Scraping.Gearvn
 
             var gift = promotion.Products.FirstOrDefault(p => string.Equals(p.Role, "gift", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(p.Name));
             if (gift == null) return null;
-            string label = string.IsNullOrWhiteSpace(gift.DealLabel) || gift.DealLabel.Equals("Tặng kèm", StringComparison.OrdinalIgnoreCase) ? "Tặng" : gift.DealLabel;
+            string label = string.IsNullOrWhiteSpace(gift.DealLabel) || gift.DealLabel.Equals("Tặng kèm", StringComparison.OrdinalIgnoreCase) ? "Gift" : gift.DealLabel;
             return $"{label}: {gift.Name}";
         }
 

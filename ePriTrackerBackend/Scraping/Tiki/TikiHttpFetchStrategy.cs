@@ -49,7 +49,7 @@ namespace ePriTrackerBackend.Scraping.Tiki
 
             return TikiUrlParser.IsTikiUrl(path)
                 ? path
-                : throw new ArgumentException("Chỉ gọi được tên miền Tiki.", nameof(path));
+                : throw new ArgumentException("Only Tiki domains are allowed.", nameof(path));
         }
     }
 }

@@ -21,7 +21,7 @@ namespace ePriTrackerBackend.Services.Admin
         /// </summary>
         public static readonly TimeSpan StaleAfter = TimeSpan.FromDays(2);
 
-        public const string UnknownPlatform = "Khác";
+        public const string UnknownPlatform = "Other";
 
         private readonly IAdminRepository _admin;
         private readonly IScraperMetricsReader _metrics;
@@ -97,7 +97,7 @@ namespace ePriTrackerBackend.Services.Admin
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Không đọc được trạng thái job Hangfire.");
-                result.JobsError = "Không đọc được trạng thái job Hangfire: " + ex.Message;
+                result.JobsError = "Could not read Hangfire job status: " + ex.Message;
             }
 
             return result;
